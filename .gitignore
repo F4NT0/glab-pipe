@@ -1,0 +1,7 @@
+# Go build output
+*.exe
+!dist/gitlab-pipeline.exe
+!dist/installer.exe
+
+# Go workspace
+/vendor/
