@@ -53,11 +53,7 @@ glab ci list -R <your-project-path> -P 1
 
 ### Default Projects
 
-On first run, `glab-pipe` creates a default configuration with these projects:
-- `account-processor-api`
-- `case-connector-api`
-- `case-gateway`
-- `case-receiver-api`
+On first run, `glab-pipe` creates an empty configuration file. No projects are hardcoded by default - you must add your own projects through the TUI interface or by editing the configuration file directly.
 
 ### Adding Projects
 
@@ -67,8 +63,8 @@ There are two ways to add projects:
 1. Run `glab-pipe`
 2. Select **"Choose another..."**
 3. Enter the GitLab path or URL:
-   - Path: `dfs/support/dfs-case-management/casemanagement/my-project`
-   - URL: `https://gitlab.example.com/dfs/support/dfs-case-management/casemanagement/my-project`
+   - Path: `group/subgroup/my-project`
+   - URL: `https://gitlab.example.com/group/subgroup/my-project`
 4. Press Enter to validate and save
 
 #### Option 2: Manual Configuration
@@ -80,7 +76,7 @@ Edit `~/.glab-pipe/projects.json`:
   "projects": [
     {
       "display_name": "my-project",
-      "full_path": "dfs/support/dfs-case-management/casemanagement/my-project"
+      "full_path": "gitlab.example.com/group/subgroup/my-project"
     }
   ]
 }
@@ -94,7 +90,7 @@ GitLab project paths use the format:
 ```
 
 For example:
-- `dfs/support/dfs-case-management/casemanagement/account-processor-api`
+- `group/subgroup/project`
 - `my-org/my-group/my-project`
 
 ### Access Requirements

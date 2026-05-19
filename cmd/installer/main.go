@@ -13,6 +13,48 @@ import (
 	"github.com/charmbracelet/lipgloss"
 )
 
+// getGitLabHost returns the GitLab hostname from environment variable or from glab config.
+// Users can set GITLAB_HOST environment variable to configure their GitLab instance.
+// If not set, tries to get the hostname from glab configuration.
+func getGitLabHost() string {
+	// First check environment variable
+	if host := os.Getenv("GITLAB_HOST"); host != "" {
+		return host
+	}
+
+	// Try to get from glab auth status - use CombinedOutput so we get output even on non-zero exit
+	// (glab auth status exits non-zero when ANY configured instance has issues, even if others are fine)
+	cmd := exec.Command("glab", "auth", "status")
+	output, _ := cmd.CombinedOutput()
+	if len(output) > 0 {
+		lines := strings.Split(string(output), "\n")
+		var loggedInHost string
+		for _, line := range lines {
+			line = strings.TrimSpace(line)
+			// Look for "Logged in to <hostname>" — this is the most reliable indicator
+			if strings.Contains(line, "Logged in to") {
+				parts := strings.Fields(line)
+				for i, part := range parts {
+					if part == "to" && i+1 < len(parts) {
+						host := strings.Trim(parts[i+1], ".,;")
+						if host != "" && host != "gitlab.com" {
+							return host // Return immediately — non-public host with confirmed login
+						}
+						if host == "gitlab.com" && loggedInHost == "" {
+							loggedInHost = host
+						}
+					}
+				}
+			}
+		}
+		if loggedInHost != "" {
+			return loggedInHost
+		}
+	}
+
+	return ""
+}
+
 // ── Constants ─────────────────────────────────────────────────────────────────
 
 const (
@@ -60,10 +102,10 @@ type Check struct {
 type checksCompleteMsg struct{ checks []Check }
 type installStepMsg struct{ step string }
 type installDoneMsg struct {
-	targetDir   string
-	psProfile   string
-	success     bool
-	errorMsg    string
+	targetDir string
+	psProfile string
+	success   bool
+	errorMsg  string
 }
 
 // ── Model ─────────────────────────────────────────────────────────────────────
@@ -438,18 +480,29 @@ func checkGlab() Check {
 		c.Message = "Not found. Install with: scoop install glab"
 		return c
 	}
-	// Check if configured for Dell
+	// Check if configured
 	authOut, err := exec.Command("glab", "auth", "status").Output()
 	if err != nil {
 		// glab auth status returns non-zero if not logged in
 		authOut = []byte{}
 	}
-	if strings.Contains(string(authOut), "gitlab.example.com") || strings.Contains(string(authOut), "logged in") {
-		c.Status = CheckOK
-		c.Message = strings.TrimSpace(strings.Split(string(out), "\n")[0])
+	host := getGitLabHost()
+	if host != "" {
+		if strings.Contains(string(authOut), host) || strings.Contains(string(authOut), "logged in") {
+			c.Status = CheckOK
+			c.Message = strings.TrimSpace(strings.Split(string(out), "\n")[0])
+		} else {
+			c.Status = CheckWarning
+			c.Message = fmt.Sprintf("Installed but may not be configured for %s", host)
+		}
 	} else {
-		c.Status = CheckWarning
-		c.Message = "Installed but may not be configured for gitlab.example.com"
+		if strings.Contains(string(authOut), "logged in") {
+			c.Status = CheckOK
+			c.Message = strings.TrimSpace(strings.Split(string(out), "\n")[0])
+		} else {
+			c.Status = CheckWarning
+			c.Message = "Installed but may not be configured"
+		}
 	}
 	return c
 }

@@ -2,6 +2,10 @@ package app
 
 import (
 	"fmt"
+	"os"
+	"path/filepath"
+	"regexp"
+	"strings"
 	"time"
 
 	"github.com/charmbracelet/bubbles/spinner"
@@ -17,10 +21,12 @@ import (
 type Screen int
 
 const (
-	ScreenWelcome   Screen = iota
-	ScreenPipelines        // pipeline table
-	ScreenJobs             // job list for a selected pipeline
-	ScreenJobLog           // modal with job trace logs
+	ScreenWelcome        Screen = iota
+	ScreenPipelines             // pipeline table
+	ScreenJobs                  // job list for a selected pipeline
+	ScreenJobLog                // modal with job trace logs
+	ScreenCreatePipeline        // modal for creating new pipeline
+	ScreenClonePrompt           // modal for prompting project clone
 )
 
 // ── Auto-refresh timing ───────────────────────────────────────────────────────
@@ -35,8 +41,22 @@ type jobTraceLoadedMsg struct {
 	jobName string
 	trace   string
 }
+type pipelineCreatedMsg struct {
+	pipelineID uint64
+}
 type tickMsg time.Time
 type errMsg struct{ err error }
+
+// Project clone messages
+type projectCheckMsg struct {
+	exists    bool
+	localPath string
+}
+type projectCloneMsg struct {
+	localPath string
+	success   bool
+	error     string
+}
 
 // ── Model ─────────────────────────────────────────────────────────────────────
 
@@ -47,6 +67,7 @@ type Model struct {
 	projects            []gl.Project
 	projectCursor       int
 	showProjectSelector bool
+	projectListOnly     bool // true when showing only project list (after Esc back)
 
 	// Pipeline table
 	selectedProject *gl.Project
@@ -55,15 +76,28 @@ type Model struct {
 	pipelineScroll  int
 
 	// Job list (detail screen)
-	detail      *gl.PipelineDetail
-	jobCursor   int
-	jobScroll   int
+	detail    *gl.PipelineDetail
+	jobCursor int
+	jobScroll int
 
 	// Job log modal
 	selectedJob   *gl.Job
 	jobTrace      string
 	traceLoading  bool
 	traceViewport *viewport.Model
+
+	// Pipeline creation modal
+	createPipelineBranch        string
+	createPipelineVariables     string
+	createPipelineError         string
+	createPipelineInputField    int    // 0 = branch, 1 = variables
+	createPipelineDisplayBranch string // The normalized branch name that will actually be used
+
+	// Project clone functionality
+	projectCloneRequested  bool   // Whether clone was requested
+	projectCloneInProgress bool   // Whether clone is in progress
+	projectCloneError      string // Error message if clone failed
+	projectLocalPath       string // Local path of the project after clone
 
 	// Loading / error / status
 	spinner   spinner.Model
@@ -123,6 +157,24 @@ func (m Model) Update(msg tea.Msg) (Model, tea.Cmd) {
 	case tea.WindowSizeMsg:
 		m.width = msg.Width
 		m.height = msg.Height
+		// Update viewport dimensions if in job log screen
+		if m.screen == ScreenJobLog && m.traceViewport != nil {
+			vpWidth := m.width - 2
+			if vpWidth < 20 {
+				vpWidth = 20
+			}
+			// height: total - title(1) - headerBox(4) - statusbar(1)
+			vpHeight := m.height - 6
+			if vpHeight < 10 {
+				vpHeight = 10
+			}
+			m.traceViewport.Width = vpWidth
+			m.traceViewport.Height = vpHeight
+			// Re-truncate content if it exists
+			if m.jobTrace != "" {
+				m.traceViewport.SetContent(truncateLines(m.jobTrace, vpWidth))
+			}
+		}
 		return m, nil
 
 	case spinner.TickMsg:
@@ -181,7 +233,16 @@ func (m Model) Update(msg tea.Msg) (Model, tea.Cmd) {
 	case jobTraceLoadedMsg:
 		m.traceLoading = false
 		m.jobTrace = msg.trace
-		m.traceViewport.SetContent(msg.trace)
+		// Truncate lines to viewport width to prevent TUI border breakage
+		vpWidth := m.traceViewport.Width
+		if vpWidth <= 0 {
+			vpWidth = m.width - 8
+		}
+		// Ensure minimum width to prevent issues
+		if vpWidth < 20 {
+			vpWidth = 20
+		}
+		m.traceViewport.SetContent(truncateLines(msg.trace, vpWidth))
 		m.traceViewport.GotoBottom()
 		// If job is still running, keep refreshing
 		var nextTick tea.Cmd
@@ -189,6 +250,45 @@ func (m Model) Update(msg tea.Msg) (Model, tea.Cmd) {
 			nextTick = scheduleRefresh()
 		}
 		return m, nextTick
+
+	case pipelineCreatedMsg:
+		m.loading = false
+		m.createPipelineError = ""
+		m.screen = ScreenPipelines
+		// Reload pipelines to show the newly created one
+		return m, tea.Batch(m.spinner.Tick, m.loadPipelines())
+
+	case projectCheckMsg:
+		if msg.exists {
+			// Project exists locally, proceed to pipelines
+			m.screen = ScreenPipelines
+			m.loading = true
+			m.projectLocalPath = msg.localPath
+			return m, tea.Batch(m.spinner.Tick, m.loadPipelines())
+		} else {
+			// Project doesn't exist locally, show clone prompt
+			m.screen = ScreenClonePrompt
+			m.projectCloneRequested = true
+			m.projectCloneInProgress = false
+			m.projectCloneError = ""
+			m.projectLocalPath = ""
+			return m, nil
+		}
+
+	case projectCloneMsg:
+		m.projectCloneInProgress = false
+		if msg.success {
+			// Clone successful, proceed to pipelines
+			m.projectCloneRequested = false
+			m.projectLocalPath = msg.localPath
+			m.screen = ScreenPipelines
+			m.loading = true
+			return m, tea.Batch(m.spinner.Tick, m.loadPipelines())
+		} else {
+			// Clone failed
+			m.projectCloneError = msg.error
+			return m, nil
+		}
 
 	case errMsg:
 		m.loading = false
@@ -201,7 +301,7 @@ func (m Model) Update(msg tea.Msg) (Model, tea.Cmd) {
 			m.errText = ""
 			return m, nil
 		}
-		if m.loading {
+		if m.loading && m.screen != ScreenJobLog {
 			return m, nil
 		}
 		return m.handleKey(msg.String())
@@ -224,6 +324,10 @@ func (m Model) handleKey(key string) (Model, tea.Cmd) {
 		return m.handleJobsKey(key)
 	case ScreenJobLog:
 		return m.handleJobLogKey(key)
+	case ScreenCreatePipeline:
+		return m.handleCreatePipelineKey(key)
+	case ScreenClonePrompt:
+		return m.handleClonePromptKey(key)
 	}
 	return m, nil
 }
@@ -256,11 +360,12 @@ func (m Model) handleWelcomeKey(key string) (Model, tea.Cmd) {
 		}
 		proj := m.projects[m.projectCursor]
 		m.selectedProject = &proj
-		m.screen = ScreenPipelines
-		m.loading = true
 		m.showProjectSelector = false
+		m.projectListOnly = false
 		m.pipelineCursor = 0
 		m.pipelineScroll = 0
+		m.screen = ScreenPipelines
+		m.loading = true
 		return m, tea.Batch(m.spinner.Tick, m.loadPipelines())
 	case "esc", "q":
 		m.showProjectSelector = false
@@ -288,13 +393,37 @@ func (m Model) handlePipelineKey(key string) (Model, tea.Cmd) {
 	case "r", "R":
 		m.loading = true
 		return m, tea.Batch(m.spinner.Tick, m.loadPipelines())
+	case "n", "N":
+		// Open create pipeline modal
+		m.screen = ScreenCreatePipeline
+		m.createPipelineBranch = ""
+		m.createPipelineVariables = ""
+		m.createPipelineError = ""
+		m.createPipelineInputField = 0
+		m.createPipelineDisplayBranch = ""
 	case "esc", "backspace":
 		// Back to welcome / project selector
 		m.screen = ScreenWelcome
 		m.showProjectSelector = true
+		m.projectListOnly = true
 		m.selectedProject = nil
 		m.pipelines = nil
 		m.pipelineCursor = 0
+		m.pipelineScroll = 0
+		m.detail = nil
+		m.jobCursor = 0
+		m.jobScroll = 0
+		m.selectedJob = nil
+		m.jobTrace = ""
+		m.traceLoading = false
+		if m.traceViewport != nil {
+			m.traceViewport.SetContent("")
+			m.traceViewport.GotoTop()
+		}
+		m.loading = false
+		// Reload project list to ensure fresh data
+		m.projects = gl.ProjectList()
+		m.projectCursor = 0
 	case "q":
 		return m, tea.Quit
 	}
@@ -361,7 +490,16 @@ func (m Model) openJobLog() (Model, tea.Cmd) {
 	m.screen = ScreenJobLog
 	m.jobTrace = ""
 	m.traceLoading = true
-	vp := viewport.New(m.width-4, m.height-8)
+	// Calculate viewport dimensions: width full, height minus header box + title + statusbar
+	vpWidth := m.width - 2
+	if vpWidth < 20 {
+		vpWidth = 20
+	}
+	vpHeight := m.height - 6
+	if vpHeight < 10 {
+		vpHeight = 10
+	}
+	vp := viewport.New(vpWidth, vpHeight)
 	vp.SetContent("")
 	m.traceViewport = &vp
 	return m, tea.Batch(m.spinner.Tick, m.loadJobTrace(job.ID))
@@ -377,7 +515,6 @@ func (m Model) handleJobLogKey(key string) (Model, tea.Cmd) {
 		m.jobTrace = ""
 		m.traceViewport.SetContent("")
 		m.traceViewport.GotoTop()
-		// Resume job-list refresh if still running
 		if m.detail != nil && (gl.IsRunning(m.detail.Status) || gl.HasAnyRunning(m.detail.Jobs)) {
 			return m, scheduleRefresh()
 		}
@@ -397,6 +534,128 @@ func (m Model) handleJobLogKey(key string) (Model, tea.Cmd) {
 		return m, tea.Quit
 	}
 	return m, nil
+}
+
+// ── Screen: Create Pipeline ─────────────────────────────────────────────────────
+
+func (m Model) handleCreatePipelineKey(key string) (Model, tea.Cmd) {
+	switch key {
+	case "ctrl+c", "q":
+		return m, tea.Quit
+	case "esc":
+		// Cancel and go back to pipelines
+		m.screen = ScreenPipelines
+		m.createPipelineBranch = ""
+		m.createPipelineVariables = ""
+		m.createPipelineError = ""
+		m.createPipelineInputField = 0
+		m.createPipelineDisplayBranch = ""
+		m.loading = false
+	case "enter":
+		// Create pipeline
+		if m.createPipelineBranch == "" {
+			m.createPipelineError = "Branch name is required"
+			return m, nil
+		}
+		m.loading = true
+		m.createPipelineError = ""
+		return m, tea.Batch(m.spinner.Tick, m.createPipeline())
+	case "tab":
+		// Switch between input fields
+		m.createPipelineInputField = 1 - m.createPipelineInputField
+	case "backspace":
+		if m.createPipelineInputField == 0 && len(m.createPipelineBranch) > 0 {
+			m.createPipelineBranch = m.createPipelineBranch[:len(m.createPipelineBranch)-1]
+			m.createPipelineDisplayBranch = normalizeBranchName(m.createPipelineBranch)
+		} else if m.createPipelineInputField == 1 && len(m.createPipelineVariables) > 0 {
+			m.createPipelineVariables = m.createPipelineVariables[:len(m.createPipelineVariables)-1]
+		}
+	case "/", "-", "_", ".":
+		// Explicitly allow special characters for branch names
+		if m.createPipelineInputField == 0 {
+			m.createPipelineBranch += key
+			m.createPipelineDisplayBranch = normalizeBranchName(m.createPipelineBranch)
+		} else {
+			m.createPipelineVariables += key
+		}
+	default:
+		// Allow alphanumeric characters
+		if len(key) == 1 {
+			if m.createPipelineInputField == 0 {
+				// Allow branch name characters (alphanumeric)
+				if (key >= "a" && key <= "z") || (key >= "A" && key <= "Z") ||
+					(key >= "0" && key <= "9") {
+					m.createPipelineBranch += key
+					m.createPipelineDisplayBranch = normalizeBranchName(m.createPipelineBranch)
+				}
+			} else {
+				// For variables, allow more characters (including :, ,, =)
+				if (key >= "a" && key <= "z") || (key >= "A" && key <= "Z") ||
+					(key >= "0" && key <= "9") || key == ":" || key == "," || key == "=" {
+					m.createPipelineVariables += key
+				}
+			}
+		}
+	}
+	return m, nil
+}
+
+// ── Screen: Clone Prompt ─────────────────────────────────────────────────────────
+
+func (m Model) handleClonePromptKey(key string) (Model, tea.Cmd) {
+	switch key {
+	case "ctrl+c", "q":
+		return m, tea.Quit
+	case "esc", "n":
+		// Cancel clone, go back to welcome
+		m.screen = ScreenWelcome
+		m.showProjectSelector = true
+		m.projectCloneRequested = false
+		m.projectCloneError = ""
+		return m, nil
+	case "y", "enter":
+		// Confirm clone
+		if m.projectCloneInProgress {
+			return m, nil // Already cloning
+		}
+		m.projectCloneInProgress = true
+		m.projectCloneError = ""
+		// Clone to default directory
+		home, err := os.UserHomeDir()
+		if err != nil {
+			m.projectCloneError = "Could not determine home directory"
+			m.projectCloneInProgress = false
+			return m, nil
+		}
+		targetDir := filepath.Join(home, "repos")
+		return m, tea.Batch(m.spinner.Tick, m.cloneProject(targetDir))
+	}
+	return m, nil
+}
+
+// normalizeBranchName adds the "story/" prefix only when the input is a bare CUC-XXX ticket code.
+func normalizeBranchName(branch string) string {
+	branch = strings.TrimSpace(branch)
+
+	// If branch already contains a path separator, return as-is
+	if strings.Contains(branch, "/") {
+		return branch
+	}
+
+	// If it starts with a known long-lived branch prefix, return as-is
+	for _, pfx := range []string{"develop", "release", "hotfix", "main", "master"} {
+		if strings.HasPrefix(strings.ToLower(branch), pfx) {
+			return branch
+		}
+	}
+
+	// Only add story/ for CUC-XXX pattern
+	if matched, _ := regexp.MatchString(`^CUC-\d+`, branch); matched {
+		return "story/" + branch
+	}
+
+	// All other inputs are returned as-is
+	return branch
 }
 
 // ── Async commands ────────────────────────────────────────────────────────────
@@ -432,6 +691,99 @@ func (m Model) loadJobTrace(jobID uint64) tea.Cmd {
 		}
 		return jobTraceLoadedMsg{jobName: fmt.Sprintf("%d", jobID), trace: trace}
 	}
+}
+
+func (m Model) createPipeline() tea.Cmd {
+	fp := m.selectedProject.FullPath
+	branch := m.createPipelineBranch
+	variables := m.createPipelineVariables
+	return func() tea.Msg {
+		pipelineID, err := gl.CreatePipeline(fp, branch, variables)
+		if err != nil {
+			return errMsg{err}
+		}
+		return pipelineCreatedMsg{pipelineID: pipelineID}
+	}
+}
+
+func (m Model) checkProjectExists(proj gl.Project) tea.Cmd {
+	return func() tea.Msg {
+		// Extract project name from display name or full path
+		projectName := proj.DisplayName
+		if projectName == "" {
+			parts := strings.Split(proj.FullPath, "/")
+			projectName = parts[len(parts)-1]
+		}
+
+		localPath, err := gl.ProjectExistsLocally(projectName)
+		if err != nil {
+			// Project not found locally, request clone
+			return projectCheckMsg{exists: false, localPath: ""}
+		}
+
+		// Project exists locally
+		return projectCheckMsg{exists: true, localPath: localPath}
+	}
+}
+
+func (m Model) cloneProject(targetDir string) tea.Cmd {
+	fp := m.selectedProject.FullPath
+	return func() tea.Msg {
+		localPath, err := gl.CloneProject(fp, targetDir)
+		if err != nil {
+			return projectCloneMsg{localPath: "", success: false, error: err.Error()}
+		}
+		return projectCloneMsg{localPath: localPath, success: true, error: ""}
+	}
+}
+
+// truncateLines truncates each line in the log to maxW visible characters,
+// preserving ANSI codes by stripping them for width measurement only.
+func truncateLines(content string, maxW int) string {
+	if maxW <= 0 {
+		return content
+	}
+	lines := strings.Split(content, "\n")
+	for i, line := range lines {
+		visible := 0
+		inEsc := false
+		var result strings.Builder
+		j := 0
+		runes := []rune(line)
+		for j < len(runes) {
+			// Detect ANSI escape sequence start
+			if !inEsc && runes[j] == '\x1b' && j+1 < len(runes) && runes[j+1] == '[' {
+				// Write the escape sequence without counting width
+				result.WriteRune(runes[j])
+				j++
+				result.WriteRune(runes[j])
+				j++
+				inEsc = true
+				continue
+			}
+			if inEsc {
+				result.WriteRune(runes[j])
+				// ANSI sequences end with a letter (a-z, A-Z)
+				if (runes[j] >= 'A' && runes[j] <= 'Z') || (runes[j] >= 'a' && runes[j] <= 'z') {
+					inEsc = false
+				}
+				j++
+				continue
+			}
+			if visible >= maxW {
+				break
+			}
+			result.WriteRune(runes[j])
+			visible++
+			j++
+		}
+		// Reset ANSI at end of truncated line to prevent color bleeding
+		if inEsc || visible >= maxW {
+			result.WriteString("\x1b[0m")
+		}
+		lines[i] = result.String()
+	}
+	return strings.Join(lines, "\n")
 }
 
 func scheduleRefresh() tea.Cmd {
@@ -487,29 +839,41 @@ func (m *Model) jobVisibleRows() int {
 	return v
 }
 
-
 // ── Exported accessors (used by ui package) ────────────────────────────────────
 
-func (m *Model) Screen() Screen              { return m.screen }
-func (m *Model) Loading() bool               { return m.loading }
-func (m *Model) TraceLoading() bool          { return m.traceLoading }
-func (m *Model) ErrText() string             { return m.errText }
-func (m *Model) StatusMsg() string           { return m.statusMsg }
-func (m *Model) Spinner() spinner.Model      { return m.spinner }
+func (m *Model) Screen() Screen               { return m.screen }
+func (m *Model) Loading() bool                { return m.loading }
+func (m *Model) TraceLoading() bool           { return m.traceLoading }
+func (m *Model) ErrText() string              { return m.errText }
+func (m *Model) StatusMsg() string            { return m.statusMsg }
+func (m *Model) Spinner() spinner.Model       { return m.spinner }
 func (m *Model) SelectedProject() *gl.Project { return m.selectedProject }
-func (m *Model) Width() int                  { return m.width }
-func (m *Model) Height() int                 { return m.height }
+func (m *Model) Width() int                   { return m.width }
+func (m *Model) Height() int                  { return m.height }
 
 // Welcome
 func (m *Model) Projects() []gl.Project    { return m.projects }
 func (m *Model) ProjectCursor() int        { return m.projectCursor }
 func (m *Model) ShowProjectSelector() bool { return m.showProjectSelector }
+func (m *Model) ProjectListOnly() bool     { return m.projectListOnly }
 
 // Pipelines
 func (m *Model) Pipelines() []gl.PipelineListItem { return m.pipelines }
 func (m *Model) PipelineCursor() int              { return m.pipelineCursor }
 func (m *Model) PipelineScroll() int              { return m.pipelineScroll }
 func (m *Model) PipelineVisibleRows() int         { return m.pipelineVisibleRows() }
+
+// Create Pipeline
+func (m *Model) CreatePipelineBranch() string        { return m.createPipelineBranch }
+func (m *Model) CreatePipelineVariables() string     { return m.createPipelineVariables }
+func (m *Model) CreatePipelineError() string         { return m.createPipelineError }
+func (m *Model) CreatePipelineInputField() int       { return m.createPipelineInputField }
+func (m *Model) CreatePipelineDisplayBranch() string { return m.createPipelineDisplayBranch }
+
+// Clone Prompt
+func (m *Model) ProjectCloneRequested() bool  { return m.projectCloneRequested }
+func (m *Model) ProjectCloneInProgress() bool { return m.projectCloneInProgress }
+func (m *Model) ProjectCloneError() string    { return m.projectCloneError }
 
 // Jobs
 func (m *Model) Detail() *gl.PipelineDetail { return m.detail }
@@ -518,8 +882,8 @@ func (m *Model) JobScroll() int             { return m.jobScroll }
 func (m *Model) JobVisibleRows() int        { return m.jobVisibleRows() }
 
 // Job Log
-func (m *Model) SelectedJob() *gl.Job      { return m.selectedJob }
-func (m *Model) JobTrace() string          { return m.jobTrace }
+func (m *Model) SelectedJob() *gl.Job           { return m.selectedJob }
+func (m *Model) JobTrace() string               { return m.jobTrace }
 func (m *Model) TraceViewport() *viewport.Model { return m.traceViewport }
 
 // FmtPipelineID returns the formatted pipeline ID string.

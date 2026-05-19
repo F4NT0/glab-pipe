@@ -118,10 +118,13 @@ func parseArgs() *gl.Project {
 			fmt.Fprintf(os.Stderr, "Error: project not found on GitLab: %v\n", err)
 			os.Exit(1)
 		}
-		return &gl.Project{
+		proj := &gl.Project{
 			DisplayName: filepath.Base(fullPath),
 			FullPath:    fullPath,
 		}
+		// Save to config for future use
+		_ = config.AddProject(config.Project{DisplayName: proj.DisplayName, FullPath: proj.FullPath})
+		return proj
 	}
 
 	return nil
@@ -142,10 +145,13 @@ func resolveByFullPath(fullPath string) *gl.Project {
 	// Use the path directly (may fail later if user has no access)
 	parts := strings.Split(fullPath, "/")
 	displayName := parts[len(parts)-1]
-	return &gl.Project{
+	proj := &gl.Project{
 		DisplayName: displayName,
 		FullPath:    fullPath,
 	}
+	// Save to config for future use
+	_ = config.AddProject(config.Project{DisplayName: proj.DisplayName, FullPath: proj.FullPath})
+	return proj
 }
 
 // findInConfig checks if a local directory path matches a project in config

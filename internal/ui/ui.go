@@ -20,14 +20,14 @@ var (
 	colorFgMuted    = lipgloss.Color("#6e7681")
 	colorOrange     = lipgloss.Color("#e8912d")
 
-	cyan    = lipgloss.Color("14")
-	white   = lipgloss.Color("15")
-	yellow  = lipgloss.Color("11")
-	red     = lipgloss.Color("9")
-	green   = lipgloss.Color("10")
-	blue    = lipgloss.Color("12")
-	gray    = lipgloss.Color("8")
-	teal    = lipgloss.Color("6")
+	cyan   = lipgloss.Color("14")
+	white  = lipgloss.Color("15")
+	yellow = lipgloss.Color("11")
+	red    = lipgloss.Color("9")
+	green  = lipgloss.Color("10")
+	blue   = lipgloss.Color("12")
+	gray   = lipgloss.Color("8")
+	teal   = lipgloss.Color("6")
 )
 
 func statusColor(status string) lipgloss.Color {
@@ -36,8 +36,10 @@ func statusColor(status string) lipgloss.Color {
 		return green
 	case "failed":
 		return red
-	case "running", "pending", "created":
+	case "running", "pending":
 		return blue
+	case "created":
+		return lipgloss.Color("240")
 	case "canceled", "cancelled", "skipped":
 		return gray
 	case "manual":
@@ -111,9 +113,13 @@ func View(m *app.Model) string {
 		body = renderJobsScreen(m, w)
 	case app.ScreenJobLog:
 		body = renderJobLogModal(m, w)
+	case app.ScreenCreatePipeline:
+		body = renderCreatePipelineModal(m, w)
+	case app.ScreenClonePrompt:
+		body = renderClonePromptModal(m, w)
 	}
 
-	if m.Loading() || m.TraceLoading() {
+	if m.Loading() || m.TraceLoading() || m.ProjectCloneInProgress() {
 		overlay := loadingStyle.Render(" " + m.Spinner().View() + " Loading… ")
 		body = placeOverlay(body, overlay, w, m.Height())
 	}
@@ -163,6 +169,18 @@ func renderTitle(m *app.Model, w int) string {
 			jobName = j.Name
 		}
 		breadcrumb = fmt.Sprintf(" glab-pipe  ›  %s  ›  Pipeline %s (%s)  ›  %s ", name, pip, branch, jobName)
+	case app.ScreenCreatePipeline:
+		name := ""
+		if p := m.SelectedProject(); p != nil {
+			name = p.DisplayName
+		}
+		breadcrumb = fmt.Sprintf(" glab-pipe  ›  %s  ›  Create Pipeline ", name)
+	case app.ScreenClonePrompt:
+		name := ""
+		if p := m.SelectedProject(); p != nil {
+			name = p.DisplayName
+		}
+		breadcrumb = fmt.Sprintf(" glab-pipe  ›  %s  ›  Clone Project ", name)
 	}
 
 	return titleStyle.Width(w).Render(breadcrumb)
@@ -185,6 +203,7 @@ func renderStatusBar(m *app.Model, w int) string {
 	case app.ScreenPipelines:
 		hints = helpKey("↑/↓") + helpDesc(" Navigate  ") +
 			helpKey("Enter") + helpDesc(" View jobs  ") +
+			helpKey("n") + helpDesc(" New pipeline  ") +
 			helpKey("r") + helpDesc(" Refresh  ") +
 			helpKey("Esc") + helpDesc(" Back  ") +
 			helpKey("q") + helpDesc(" Quit")
@@ -200,6 +219,15 @@ func renderStatusBar(m *app.Model, w int) string {
 			helpKey("g/G") + helpDesc(" Top/Bottom  ") +
 			helpKey("Esc") + helpDesc(" Back  ") +
 			helpKey("q") + helpDesc(" Quit")
+	case app.ScreenCreatePipeline:
+		hints = helpKey("Enter") + helpDesc(" Create  ") +
+			helpKey("Tab") + helpDesc(" Next field  ") +
+			helpKey("Esc") + helpDesc(" Cancel  ") +
+			helpKey("q") + helpDesc(" Quit")
+	case app.ScreenClonePrompt:
+		hints = helpKey("Y") + helpDesc(" Clone  ") +
+			helpKey("N") + helpDesc(" Cancel  ") +
+			helpKey("q") + helpDesc(" Quit")
 	}
 	return statusBarStyle.Width(w).Render(hints)
 }
@@ -210,6 +238,11 @@ func helpDesc(s string) string { return helpDescStyle.Render(s) }
 // ── Welcome screen ─────────────────────────────────────────────────────────────
 
 func renderWelcomeScreen(m *app.Model, w int) string {
+	// If returning from pipelines via Esc, show only project list
+	if m.ProjectListOnly() {
+		return renderProjectListOnly(m, w)
+	}
+
 	muted := lipgloss.NewStyle().Foreground(colorFgMuted)
 	orange := colorOrange
 
@@ -251,21 +284,65 @@ func renderWelcomeScreen(m *app.Model, w int) string {
 	return box
 }
 
+func renderProjectListOnly(m *app.Model, w int) string {
+	projects := m.Projects()
+	cursor := m.ProjectCursor()
+	orange := colorOrange
+
+	var sb strings.Builder
+
+	for i, p := range projects {
+		selected := i == cursor
+		var row string
+		if selected {
+			row = lipgloss.NewStyle().Foreground(orange).Bold(true).Render("> " + p.DisplayName)
+		} else {
+			row = lipgloss.NewStyle().Foreground(colorFg).Render("  " + p.DisplayName)
+		}
+		sb.WriteString(row + "\n")
+	}
+
+	if len(projects) == 0 {
+		sb.WriteString(lipgloss.NewStyle().Foreground(colorFgMuted).Render("  No projects configured.\n  Run glab-pipe . in a git repo to add one."))
+	}
+
+	// Center the content vertically and horizontally
+	content := sb.String()
+	lines := strings.Split(content, "\n")
+	contentHeight := len(lines)
+	topPad := (m.Height() - contentHeight) / 2
+	if topPad < 0 {
+		topPad = 0
+	}
+	leftPad := (w - 50) / 2
+	if leftPad < 0 {
+		leftPad = 0
+	}
+
+	var result strings.Builder
+	result.WriteString(strings.Repeat("\n", topPad))
+	for _, line := range lines {
+		result.WriteString(strings.Repeat(" ", leftPad) + line + "\n")
+	}
+
+	return lipgloss.NewStyle().
+		Background(colorBg).
+		Width(w).
+		Height(m.Height()).
+		Render(result.String())
+}
+
 func renderProjectSelectorModal(m *app.Model, w int) string {
 	projects := m.Projects()
 	cursor := m.ProjectCursor()
 
-	modalWidth := 70
+	modalWidth := 40
 	if modalWidth > w-4 {
 		modalWidth = w - 4
 	}
 
 	orange := colorOrange
 	var sb strings.Builder
-
-	titleLine := lipgloss.NewStyle().Foreground(orange).Bold(true).Render("  Select Project")
-	sb.WriteString(titleLine + "\n")
-	sb.WriteString(lipgloss.NewStyle().Foreground(gray).Render("  ─────────────────────────────────────────────\n"))
 
 	for i, p := range projects {
 		selected := i == cursor
@@ -316,22 +393,21 @@ func renderPipelineTable(m *app.Model, w int) string {
 
 	innerW := w - 4 // account for border + padding
 
-	// Column widths
-	statusW := 12
-	idW := 12
-	branchW := innerW - statusW - idW - 30 // rest for branch
-	if branchW < 20 {
-		branchW = 20
+	// Column widths: prefix(2) + statusW+2(icon) + sep(2) + idW + sep(2) + branchW
+	statusW := 10 // displayed as statusW+2 for icon
+	idW := 10
+	// total fixed = 2 + (statusW+2) + 2 + idW + 2 = 28
+	branchW := innerW - 28
+	if branchW < 16 {
+		branchW = 16
 	}
-	startedW := 24
 
 	// Table header
 	headerStyle := lipgloss.NewStyle().Foreground(gray).Bold(true)
-	headerLine := fmt.Sprintf("  %-*s  %-*s  %-*s  %-*s",
+	headerLine := fmt.Sprintf("  %-*s  %-*s  %-*s",
 		statusW, "Status",
 		idW, "ID",
 		branchW, "Branch",
-		startedW, "Iniciado",
 	)
 	header := headerStyle.Render(headerLine)
 	separator := lipgloss.NewStyle().Foreground(gray).Render("  " + strings.Repeat("─", innerW-2))
@@ -364,13 +440,10 @@ func renderPipelineTable(m *app.Model, w int) string {
 		if len(branch) > branchW {
 			branch = branch[:branchW-1] + "…"
 		}
-		started := fmtTime(p.CreatedAt)
-
-		line := fmt.Sprintf("  %-*s  %-*s  %-*s  %-*s",
+		line := fmt.Sprintf("  %-*s  %-*s  %-*s",
 			statusW+2, statusStr, // +2 for icon width
 			idW, idStr,
 			branchW, branch,
-			startedW, started,
 		)
 
 		if selected {
@@ -395,7 +468,7 @@ func renderPipelineTable(m *app.Model, w int) string {
 	return lipgloss.NewStyle().
 		Border(lipgloss.RoundedBorder()).
 		BorderForeground(white).
-		Width(w - 2).Padding(0, 1).Render(sb.String())
+		Width(w-2).Padding(0, 1).Render(sb.String())
 }
 
 func orange() lipgloss.Color { return colorOrange }
@@ -438,8 +511,8 @@ func renderPipelineSummary(d *gl.PipelineDetail, w int) string {
 		summaryRow("  Source    ", summaryValStyle.Render(source)),
 		summaryRow("  Branch    ", lipgloss.NewStyle().Foreground(cyan).Render(d.GitRef)),
 		summaryRow("  User      ", summaryValStyle.Render(author)),
-		summaryRow("  Created   ", summaryValStyle.Render(gl.DerefStr(d.CreatedAt, "—"))),
-		summaryRow("  Updated   ", summaryValStyle.Render(gl.DerefStr(d.UpdatedAt, "—"))),
+		summaryRow("  Created   ", summaryValStyle.Render(fmtTime(d.CreatedAt))),
+		summaryRow("  Updated   ", summaryValStyle.Render(fmtTime(d.UpdatedAt))),
 	}
 
 	content := strings.Join(lines, "\n")
@@ -447,7 +520,7 @@ func renderPipelineSummary(d *gl.PipelineDetail, w int) string {
 	return lipgloss.NewStyle().
 		Border(lipgloss.RoundedBorder()).
 		BorderForeground(statusColor(d.Status)).
-		Width(w - 2).
+		Width(w-2).
 		Padding(0, 1).
 		Render(lipgloss.JoinVertical(lipgloss.Left,
 			lipgloss.NewStyle().Foreground(white).Bold(true).Render("  Pipeline Summary"),
@@ -500,7 +573,6 @@ func renderJobList(m *app.Model, d *gl.PipelineDetail, w int) string {
 		if len([]rune(nameStr)) > nameW {
 			nameStr = string([]rune(nameStr)[:nameW-1]) + "…"
 		}
-
 		line := fmt.Sprintf("%-*s  %-*s",
 			statusW+2, statusStr,
 			nameW, nameStr,
@@ -527,7 +599,7 @@ func renderJobList(m *app.Model, d *gl.PipelineDetail, w int) string {
 	return lipgloss.NewStyle().
 		Border(lipgloss.RoundedBorder()).
 		BorderForeground(white).
-		Width(w - 2).Padding(0, 1).Render(sb.String())
+		Width(w-2).Padding(0, 1).Render(sb.String())
 }
 
 // ── Job Log Modal ──────────────────────────────────────────────────────────────
@@ -536,15 +608,12 @@ func renderJobLogModal(m *app.Model, w int) string {
 	job := m.SelectedJob()
 	d := m.Detail()
 
-	// Modal dimensions: almost full terminal
-	modalW := w - 4
-	if modalW < 40 {
-		modalW = 40
+	// Header box width
+	headerW := w - 4
+	if headerW < 40 {
+		headerW = 40
 	}
-	modalH := m.Height() - 4
-	if modalH < 10 {
-		modalH = 10
-	}
+	innerW := headerW - 4
 
 	// Build title
 	titleStr := " Job Log "
@@ -555,7 +624,26 @@ func renderJobLogModal(m *app.Model, w int) string {
 		titleStr = fmt.Sprintf(" %s  %s  |  Pipeline #%d  |  %s ", statusRendered, job.Name, d.ID, d.GitRef)
 	}
 
-	// Trace content via viewport
+	// Line count
+	totalLines := len(strings.Split(m.JobTrace(), "\n"))
+	scrollInfo := lipgloss.NewStyle().Foreground(gray).Render(fmt.Sprintf(" %d lines", totalLines))
+
+	logTitleStyle := lipgloss.NewStyle().Foreground(white).Bold(true)
+	headerRow := lipgloss.JoinHorizontal(lipgloss.Top,
+		logTitleStyle.Render(titleStr),
+		scrollInfo,
+	)
+	sep := lipgloss.NewStyle().Foreground(gray).Render(strings.Repeat("─", innerW))
+
+	// Header in a compact bordered box
+	headerBox := lipgloss.NewStyle().
+		Border(lipgloss.RoundedBorder()).
+		BorderForeground(white).
+		Width(headerW).
+		Padding(0, 1).
+		Render(strings.Join([]string{headerRow, sep}, "\n"))
+
+	// Log content rendered freely (viewport), no outer box
 	vp := m.TraceViewport()
 	traceContent := vp.View()
 	if m.TraceLoading() && traceContent == "" {
@@ -565,38 +653,153 @@ func renderJobLogModal(m *app.Model, w int) string {
 		traceContent = "  No log output available."
 	}
 
-	innerW := modalW - 4
+	return lipgloss.JoinVertical(lipgloss.Left, headerBox, traceContent)
+}
 
-	// Scroll indicator
-	scrollInfo := ""
-	totalLines := len(strings.Split(m.JobTrace(), "\n"))
-	if totalLines > 0 {
-		scrollInfo = lipgloss.NewStyle().Foreground(gray).Render(
-			fmt.Sprintf(" %d lines", totalLines),
-		)
+// ── Create Pipeline Modal ───────────────────────────────────────────────────────
+
+func renderCreatePipelineModal(m *app.Model, w int) string {
+	modalW := 60
+	if modalW > w-4 {
+		modalW = w - 4
 	}
 
-	titleStyle := lipgloss.NewStyle().
-		Foreground(white).
-		Bold(true)
+	var sb strings.Builder
 
-	headerRow := lipgloss.JoinHorizontal(lipgloss.Top,
-		titleStyle.Render(titleStr),
-		scrollInfo,
-	)
+	// Title
+	title := lipgloss.NewStyle().Foreground(white).Bold(true).Render("  Create New Pipeline  ")
+	sb.WriteString(title + "\n")
+
+	// Separator
+	sep := lipgloss.NewStyle().Foreground(gray).Render(strings.Repeat("─", modalW-4))
+	sb.WriteString(sep + "\n")
+
+	// Branch input
+	branchLabel := lipgloss.NewStyle().Foreground(cyan).Render("  Branch:  ")
+	branchInput := m.CreatePipelineBranch()
+	var branchDisplay string
+	if m.CreatePipelineInputField() == 0 {
+		branchInput += "█"
+		branchDisplay = lipgloss.NewStyle().Foreground(white).Bold(true).Render(branchInput)
+	} else {
+		branchDisplay = lipgloss.NewStyle().Foreground(white).Render(branchInput)
+	}
+	sb.WriteString(branchLabel + branchDisplay + "\n")
+
+	// Show normalized branch name if different from input
+	displayBranch := m.CreatePipelineDisplayBranch()
+	if displayBranch != "" && displayBranch != branchInput {
+		normalizedText := lipgloss.NewStyle().Foreground(gray).Render("  → Will use: " + displayBranch)
+		sb.WriteString(normalizedText + "\n")
+	}
+
+	// Variables input (optional)
+	varLabel := lipgloss.NewStyle().Foreground(cyan).Render("  Variables (optional):  ")
+	varInput := m.CreatePipelineVariables()
+	if varInput == "" {
+		varInput = "(press Enter to skip)"
+	}
+	var varDisplay string
+	if m.CreatePipelineInputField() == 1 {
+		if m.CreatePipelineVariables() == "" {
+			varInput = "█"
+		} else {
+			varInput += "█"
+		}
+		varDisplay = lipgloss.NewStyle().Foreground(white).Bold(true).Render(varInput)
+	} else {
+		varDisplay = lipgloss.NewStyle().Foreground(gray).Render(varInput)
+	}
+	sb.WriteString(varLabel + varDisplay + "\n")
+
+	// Error message
+	if m.CreatePipelineError() != "" {
+		errorMsg := lipgloss.NewStyle().Foreground(red).Render("  " + m.CreatePipelineError())
+		sb.WriteString("\n" + errorMsg + "\n")
+	}
+
+	// Help text
+	helpText := lipgloss.NewStyle().Foreground(gray).Render("  Variables format: key1:value1,key2:value2")
+	sb.WriteString("\n" + helpText + "\n")
+	branchHelp := lipgloss.NewStyle().Foreground(gray).Render("  Enter only the ticket code (e.g. CUC-690) → becomes story/CUC-690")
+	sb.WriteString(branchHelp + "\n")
+
+	modalContent := sb.String()
+
+	return lipgloss.NewStyle().
+		Border(lipgloss.RoundedBorder()).
+		BorderForeground(cyan).
+		Width(modalW).
+		Padding(1, 1).
+		Render(modalContent)
+}
+
+// ── Clone Prompt Modal ───────────────────────────────────────────────────────────
+
+func renderClonePromptModal(m *app.Model, w int) string {
+	modalW := 60
+	if modalW > w-4 {
+		modalW = w - 4
+	}
+
+	var sb strings.Builder
+
+	// Title
+	title := lipgloss.NewStyle().Foreground(white).Bold(true).Render("  Project Not Found Locally  ")
+	sb.WriteString(title + "\n")
+
+	// Separator
+	sep := lipgloss.NewStyle().Foreground(gray).Render(strings.Repeat("─", modalW-4))
+	sb.WriteString(sep + "\n")
+
+	// Message
+	projectName := ""
+	if m.SelectedProject() != nil {
+		projectName = m.SelectedProject().DisplayName
+	}
+	message := fmt.Sprintf("  Project '%s' not found in local directories.\n\n  Clone it to ~/repos?", projectName)
+	sb.WriteString(lipgloss.NewStyle().Foreground(colorFg).Render(message) + "\n")
+
+	// Error message if any
+	if m.ProjectCloneError() != "" {
+		errorText := lipgloss.NewStyle().Foreground(red).Render("  Error: " + m.ProjectCloneError())
+		sb.WriteString("\n" + errorText + "\n")
+	}
+
+	// Options
+	sb.WriteString("\n")
+	yesStyle := lipgloss.NewStyle().Foreground(green).Bold(true)
+	noStyle := lipgloss.NewStyle().Foreground(red)
+	sb.WriteString("  " + yesStyle.Render("Y") + "/Enter - Clone to ~/repos\n")
+	sb.WriteString("  " + noStyle.Render("N") + "/Esc - Cancel\n")
+
+	modalContent := sb.String()
 
 	modal := lipgloss.NewStyle().
 		Border(lipgloss.RoundedBorder()).
-		BorderForeground(white).
+		BorderForeground(cyan).
 		Width(modalW).
-		Padding(0, 1).
-		Render(lipgloss.JoinVertical(lipgloss.Left,
-			headerRow,
-			lipgloss.NewStyle().Foreground(gray).Render(strings.Repeat("─", innerW)),
-			lipgloss.NewStyle().Foreground(colorFg).Render(traceContent),
-		))
+		Padding(1, 1).
+		Render(modalContent)
 
-	return modal
+	// Center the modal
+	leftPad := (w - lipgloss.Width(modal)) / 2
+	if leftPad < 0 {
+		leftPad = 0
+	}
+	topPad := (m.Height() - lipgloss.Height(modal)) / 2
+	if topPad < 0 {
+		topPad = 0
+	}
+
+	leftPadStr := strings.Repeat(" ", leftPad)
+	topPadStr := strings.Repeat("\n", topPad)
+
+	lines := strings.Split(modal, "\n")
+	for i := range lines {
+		lines[i] = leftPadStr + lines[i]
+	}
+	return topPadStr + strings.Join(lines, "\n")
 }
 
 // ── Error overlay ─────────────────────────────────────────────────────────────
@@ -667,13 +870,13 @@ func placeOverlay(body, overlay string, w, h int) string {
 	return strings.Join(result, "\n")
 }
 
-// ── Time helper ───────────────────────────────────────────────────────────────
+// ── Time helpers ──────────────────────────────────────────────────────────────
 
-func fmtTime(s *string) string {
+// fmtTimeShort formats as "05/18 14:23 UTC" (15 chars) for compact table columns.
+func fmtTimeShort(s *string) string {
 	if s == nil || *s == "" {
 		return "—"
 	}
-	// Try common ISO8601 formats
 	for _, layout := range []string{
 		time.RFC3339,
 		"2006-01-02T15:04:05.000Z07:00",
@@ -681,7 +884,29 @@ func fmtTime(s *string) string {
 		"2006-01-02 15:04:05 UTC",
 	} {
 		if t, err := time.Parse(layout, *s); err == nil {
-			return t.Local().Format("02/01 15:04:05 -07")
+			return t.Format("01/02 15:04 UTC")
+		}
+	}
+	raw := *s
+	if len(raw) > 15 {
+		raw = raw[:15]
+	}
+	return raw
+}
+
+func fmtTime(s *string) string {
+	if s == nil || *s == "" {
+		return "—"
+	}
+	// Try common ISO8601 formats (GitLab returns UTC)
+	for _, layout := range []string{
+		time.RFC3339,
+		"2006-01-02T15:04:05.000Z07:00",
+		"2006-01-02T15:04:05Z",
+		"2006-01-02 15:04:05 UTC",
+	} {
+		if t, err := time.Parse(layout, *s); err == nil {
+			return t.Format("01/02/2006 15:04 UTC")
 		}
 	}
 	// Fallback: return raw string trimmed

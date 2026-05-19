@@ -1,94 +1,254 @@
+# glab-pipe - GitLab CI/CD Pipeline TUI
 
-# Refatoração do projeto glab-pipeline
+## Overview
 
+`glab-pipe` is a terminal user interface (TUI) application for monitoring and managing GitLab CI/CD pipelines. It provides real-time monitoring of pipeline status, job details, and log traces with automatic refresh capabilities.
 
-## Antes de começar
+## Before You Begin
 
-1. Leia todo o documento e me pergunte se tem alguma duvida.
-2. Crie um arquivo de configuração para colocar os projetos que passei, esse arquivo deve ser lido pelo sistema onde pode ser adicionado mais projetos.
-3. Valide um possivel consumo de tokens por esse projeto.
-4. Não precisa perguntar se desejo rodar algum comando, pode fazer todos os comandos necessários para validar e implementar.
-5. No final, me mostre arquivos modificados, processos feitos, validações para garantir funcionamento
-6. Certifique de criar um .exe para o instalador e para o programa e me mostre o comando para eu poder debugar manualmente se quiser
-7. Crie/Atualize o README.md do projeto com todos os detalhes técnicos e de uso do software, mostrando o passo a passo de uso e deixando espaços para eu colocar imagens de exemplo.
+1. Read this documentation thoroughly
+2. Configure your projects in the local configuration file
+3. Ensure `glab` CLI is installed and authenticated to your GitLab instance
+4. A Nerd Font is recommended for proper icon display
+5. PowerShell is recommended over Command Prompt for better compatibility
 
-## Busca de projetos
+## Project Configuration
 
-1. Adicione os seguintes projetos no programa:
+Configure your projects in `~/.glab-pipe/projects.json`:
 
-- dfs/support/dfs-case-management/casemanagement/account-processor-api
-- dfs/support/dfs-case-management/casemanagement/case-connector-api
-- dfs/support/dfs-case-management/casemanagement/case-gateway
-- dfs/support/dfs-case-management/casemanagement/case-receiver-api
-
-## Processo 
-
-1. Devo iniciar o programa com o comando glab-pipe no terminal (esse deve ser o comando que o instalador deve configurar no meu terminal para eu iniciar o projeto).
-2. Mostra o menu inicial com o meu ascii text e a opção de selecionar qual repositório desejo verificar
-3. O programa deve mostrar uma tabela com todas as ultimas 10 pipelines que foram rodadas no projeto onde na tabela deve ser o status da pipeline como:
-
-```
- (\uf192) em azul dizendo que está running
- (\uf05d) em verde dizendo que foi success
- (\uf52f) em vermelho dizendo que foi failed
- (\ueabd) em cinza dizendo que foi canceled
- (\uf2be) em amarelo dizendo que foi manual
+```json
+{
+  "projects": [
+    {
+      "display_name": "my-project",
+      "full_path": "group/subgroup/project"
+    }
+  ]
+}
 ```
 
-Nessa tabela a primeira coluna se chama Status com esses icones, na segunda coluna é o ID da pipeline (ex. #56012567), a terceira coluna é o nome da branch que pertence essa pipeline (ex. story/CUC-689) e a quarta coluna é quando a pipeline foi iniciada.
+**Supported path formats:**
+- **With hostname (recommended):** `gitlab.example.com/group/subgroup/project`
+- **Without hostname:** `group/subgroup/project` (hostname auto-detected from `glab auth status`)
+- **Full URL:** `https://gitlab.example.com/group/subgroup/project`
 
-Obs: se consegue essas informações usando o comando do `glab ci list` com o projeto que foi selecionado.
+**Hostname Detection:**
+The application automatically detects your GitLab instance hostname from:
+1. `GITLAB_HOST` environment variable (highest priority)
+2. `glab auth status` output (detects authenticated instances)
+3. If neither is available, relies on glab's default configuration
 
-4. Devo poder selecionar qual pipeline desejo verificar, onde quando clicar em Enter devo ser enviado a outra visão do sistema.
-5. Nessa outra visão, deve mostrar os jobs da pipeline, em uma lista também, onde tem os seguintes detalhes
+## Usage
 
+### Starting the Application
+
+```bash
+# Open main menu to select a project
+glab-pipe
+
+# Auto-detect project from current directory
+glab-pipe .
+
+# Specify project path directly
+glab-pipe --source group/subgroup/project
 ```
- (\uf192) em azul dizendo que está running
- (\uf05d) em verde dizendo que foi success
- (\uf52f) em vermelho dizendo que foi failed
- (\ueabd) em cinza dizendo que foi canceled
- (\uf2be) em amarelo dizendo que foi manual
- (\uf01d) em amarelo dizendo que precisa rodar manualmente
+
+### Main Screens
+
+#### 1. Project Selection Screen
+
+- ASCII art welcome banner
+- List of configured projects
+- Use `↑/↓` to navigate, `Enter` to select, `Esc` to quit
+
+#### 2. Pipeline List Screen
+
+Shows the last 10 pipelines for the selected project:
+
+| Column | Description |
+|--------|-------------|
+| Status | Pipeline status with Nerd Font icons |
+| ID | Pipeline ID (e.g., #56012567) |
+| Branch | Branch name (e.g., story/CUC-689) |
+| Started | When the pipeline started |
+
+**Status Icons:**
+- `` (\uf192) - Running (blue)
+- `` (\uf05d) - Success (green)
+- `` (\uf52f) - Failed (red)
+- `` (\ueabd) - Canceled (gray)
+- `` (\uf2be) - Manual trigger (yellow)
+
+**Keybindings:**
+- `↑/↓` - Navigate pipelines
+- `Enter` - View pipeline details
+- `r` - Refresh pipeline list
+- `n` - Create new pipeline
+- `Esc` - Return to project selection
+- `q` - Quit
+
+**Auto-refresh:** Updates every 2 seconds while any pipeline is running.
+
+#### 3. Pipeline Detail Screen
+
+Shows detailed information about the selected pipeline:
+
+**Pipeline Summary (top section):**
+- Pipeline ID
+- Status
+- Source (trigger method)
+- Branch (ref)
+- User who triggered
+- Created timestamp
+- Updated timestamp
+
+**Job List (table):**
+
+| Column | Description |
+|--------|-------------|
+| Status | Job status with icons |
+| Name | Job name |
+
+**Job Status Icons:**
+- `` (\uf192) - Running (blue)
+- `` (\uf05d) - Success (green)
+- `` (\uf52f) - Failed (red)
+- `` (\ueabd) - Canceled (gray)
+- `` (\uf2be) - Manual (yellow)
+- `` (\uf01d) - Waiting for manual play (yellow)
+
+**Keybindings:**
+- `↑/↓` - Navigate jobs
+- `Enter` - View job logs
+- `r` - Refresh job list
+- `Esc` - Return to pipeline list
+- `q` - Quit
+
+**Auto-refresh:** Updates every 2 seconds while pipeline or any job is running.
+
+#### 4. Job Log Modal
+
+Displays log output for the selected job:
+
+- **Modal title:** Status icon, job name, pipeline ID, branch
+- **Content:** Full job log trace
+- **Auto-refresh:** Updates every 2 seconds while job is running
+
+**Keybindings:**
+- `↑/↓` - Scroll log
+- `PgUp/PgDn` - Scroll half page
+- `g` - Jump to top
+- `G` - Jump to bottom
+- `/` - Search logs
+- `n/N` - Next/previous search match
+- `Esc` - Close modal
+
+### Creating a New Pipeline
+
+Press `n` on the pipeline list screen to create a new pipeline.
+
+**What happens when you create a pipeline:**
+
+The application uses `glab ci run` to trigger a pipeline on the GitLab server. This process:
+
+1. **Branch Verification:** Checks if the specified branch exists on the GitLab server (not locally)
+2. **Remote Trigger:** Triggers a new CI/CD pipeline on the GitLab server for the specified branch
+3. **Commit Selection:** Uses the **latest commit** on the remote branch (does not use local commits)
+4. **Variable Injection:** Optionally injects CI/CD variables into the pipeline
+5. **Pipeline Execution:** GitLab CI/CD executes the pipeline on the remote server
+6. **ID Return:** Returns the pipeline ID, which the TUI uses to refresh the pipeline list
+
+**Important Notes:**
+- **No local commit involvement:** The pipeline runs on the remote GitLab server using the remote branch's latest commit
+- **Branch must exist remotely:** If the branch doesn't exist on GitLab, creation fails
+- **No push operation:** Does not push local commits to the remote repository
+- **Trigger-only operation:** Simply triggers the GitLab CI/CD system to execute
+
+**Branch Name Normalization:**
+- Ticket format (e.g., `CUC-639`) → Automatically prepends `story/` → `story/CUC-639`
+- Long-lived branches (`develop`, `release`, `hotfix`, `main`, `master`) → Used as-is
+- Branches with `/` → Used as-is
+- Other inputs → Used as-is
+
+**Pipeline Creation Modal:**
+
+**Input Fields:**
+- Branch name (required)
+- Variables (optional, format: `KEY:VALUE,KEY2:VALUE2`)
+
+**Keybindings:**
+- `Tab` - Switch between input fields
+- `Enter` - Create pipeline
+- `Esc` - Cancel
+- `q` - Quit
+
+**Example:**
+```
+Branch: CUC-639
+Variables: DEPLOY_ENV:staging,DEBUG:true
+
+→ Will use: story/CUC-639
 ```
 
-Nessa tabela de jobs, a primeira coluna é o status usando os icones acima, a segunda coluna é o nome do job.
+### Installer
 
-Obs: se consegue essas informações usando o comando `glab ci get --pipeline-id=PipelineId`
+The installer provides an interactive TUI setup:
 
-Acima dessa tabela de jobs deve ter as informações principais da pipeline
+1. **Prerequisites Check:**
+   - Verifies `glab` CLI installation and configuration
+   - Checks for Nerd Font support (warning if missing)
+   - Checks shell environment (PowerShell recommended)
 
-- ID da pipeline
-- Status da pipeline
-- Source da Pipeline
-- Nome da branco que foi rodada (ref)
-- User que rodou a pipeline
-- Quando a pipeline foi criada
-- Quando a pipeline foi atualizada
+2. **Installation:**
+   - Installs `glab-pipe.exe` to a system directory
+   - Adds to PATH for both PowerShell and Command Prompt
+   - Configures the `glab-pipe` command
 
-Nessa página, diferente da página de todas as pipelines, deve ficar se atualizando a cada 2 segundos, mostrando atualização da pipeline e dos jobs.
+3. **Visual Design:**
+   - Modern, friendly TUI interface
+   - Follows design patterns from similar tools (e.g., clidocs)
 
-6. Devo poder selecionar qual job abrir dessa tabela, onde posso selecionar qualquer um dos jobs.
-7. Quando eu clicar no Job, ele deve abrir um modal quase do tamanho total do software aberto (o TUI de todo o software deve alterar de tamanho devido ao tamanho do terminal aberto, o modal deve ser quase o tamanho todo, para poder ver bem os logs).
-8. Nesse modal deve mostrar os logs do job, pode ser pego usando o comando `glab ci trace nome-job --pipeline-id=PipelineId`.
-9. Caso o job ainda esteja rodando, deve ser atualizado a casa 2 segundos o modal para poder ver sendo atualizado o status do job e do log, o modal deve ter no título dele o status do job usando os icones mencionados, o nome do job, código da pipeline e branch da pipeline para poder ter o trace completo do processo. 
-10. Posso fechar o modal com Esc para voltar a lista de jobs que deve continuar se atualizando enquanto tiver um job como running, quando a pipeline estiver concluida ele para de ficar atualizando o modal do job e a página dos jobs.
-11. Posso voltar com Esc na página dos jobs para a página inicial com todas as pipelines do projeto, onde se tiver com alguma pipeline rodando deve ficar se atualizando a cada 2 segundos para ver o status das pipelines, se não tiver nenhum rodando não precisa ficar atualizando.
-12. Se eu clicar em Esc na tela das pipelines deve me levar de volta ao menu principal, onde posso clicar em Enter de novo para escolher outro projeto.
+## Command Line Options
 
-## instalador
+```bash
+# Interactive project selection
+glab-pipe
 
-1. O instalador deve ser utilizando um TUI parecido com o do projeto C:\Users\Gabriel_Stundner\source\repos\GITHUB\clidocs\install.exe
-2. Deve ser verificado se possui o glab instalado e configurado com o gitlab.example.com, deve verificar se tem uma fonte nerd font no terminal (mostra um warning explicando que os icones não aparecem corretamente sem uma fonte nerd font) e se está usando o powershell (mostra um warning dizendo que é melhor usar o powershell).
-3. Instala o .exe desse programa no computador em um lugar onde o comando `glab-pipe` encontre o programa.
-4. Coloca no PATH para que tanto o powershell quanto o command prompt consiga rodar o comando glab-pipe.
-5. O instalador deve ter todo o visual TUI seguindo o exemplo do clidocs.
+# Auto-detect from current directory
+glab-pipe .
 
-## Utilização do comando
+# Specify project path
+glab-pipe --source group/subgroup/project
+```
 
-1. Caso somente coloque glab-pipe no terminal ele abre o menu principal para selecionar o projeto.
-2. Caso rode o comando como `glab-pipe . ` ele deve verificar se o projeto atual se encontra no gitlab.example.com e procura o caminho correto dele, se o caminho já existir nas configurações (ele está salvo como os que pedi acima) senão ele deve procurar se for a primeira vez que está sendo aberto.
-3. Achando o projeto pelo glab, ele envia para a tela das pipelines do projeto e segue o processo já explicado.
-4. Caso rode o comando `glab-pipe --source <caminho>` ele já irá pegar a localização do projeto e se o usuário tiver permissão de visualizar ele abre a tela das pipelines, senão apresenta uma mensagem na tela dizendo que não encontrou o programa.
+## Technical Details
 
+### Data Sources
 
+- **Pipeline list:** `glab ci list -R <project> -F json -P 10`
+- **Pipeline details:** `glab ci get -R <project> -p <pipeline-id> -F json --with-job-details`
+- **Job traces:** `glab ci trace <job-id> -R <project>`
 
+### Auto-Refresh Behavior
+
+- **Pipeline list:** Refreshes every 2 seconds while any pipeline is running
+- **Job list:** Refreshes every 2 seconds while pipeline or any job is running
+- **Job logs:** Refreshes every 2 seconds while the selected job is running
+- **Stops auto-refresh:** When all pipelines/jobs reach terminal state (success, failed, canceled)
+
+### Error Handling
+
+- Displays error messages in the TUI
+- Graceful handling of network issues
+- Clear feedback for authentication problems
+- Helpful error messages for missing branches or permissions
+
+## Screenshots
+
+*Placeholder for screenshots:*
+- Project selection screen
+- Pipeline list screen
+- Pipeline detail screen
+- Job log modal
+- Pipeline creation modal
+- Installer screens

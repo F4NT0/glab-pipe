@@ -18,12 +18,8 @@ type Config struct {
 }
 
 // defaultProjects are the built-in projects seeded when no config file exists yet.
-var defaultProjects = []Project{
-	{DisplayName: "account-processor-api", FullPath: "dfs/support/dfs-case-management/casemanagement/account-processor-api"},
-	{DisplayName: "case-connector-api", FullPath: "dfs/support/dfs-case-management/casemanagement/case-connector-api"},
-	{DisplayName: "case-gateway", FullPath: "dfs/support/dfs-case-management/casemanagement/case-gateway"},
-	{DisplayName: "case-receiver-api", FullPath: "dfs/support/dfs-case-management/casemanagement/case-receiver-api"},
-}
+// No projects are hardcoded by default - users must configure their own projects.
+var defaultProjects = []Project{}
 
 // ConfigDir returns the directory where glab-pipe stores configuration.
 func ConfigDir() string {

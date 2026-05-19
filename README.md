@@ -40,7 +40,7 @@ Interactive TUI (Terminal User Interface) for viewing and monitoring GitLab CI/C
 ## Requirements
 
 - **Go 1.22+** (for building only)
-- **`glab` CLI** installed and authenticated with `gitlab.example.com`
+- **`glab` CLI** installed and authenticated with your GitLab instance
 - **Nerd Font** in your terminal (for correct icons — e.g. JetBrainsMono Nerd Font)
 - **PowerShell** (recommended for best color support)
 
@@ -50,8 +50,8 @@ scoop install glab
 # or
 winget install glab
 
-# Authenticate with Dell GitLab
-glab auth login --hostname gitlab.example.com
+# Authenticate with your GitLab instance
+glab auth login --hostname your-gitlab-instance.com
 ```
 
 ### Install a Nerd Font
@@ -61,6 +61,33 @@ Download and install a Nerd Font:
 - [CascadiaCode Nerd Font](https://github.com/ryanoasis/nerd-fonts/releases)
 
 Then configure your terminal (Windows Terminal, PowerShell) to use the installed font.
+
+---
+
+## Configuration
+
+### GitLab Hostname
+
+By default, `glab-pipe` uses the GitLab instance configured in your `glab` CLI. If you need to specify a different GitLab hostname, set the `GITLAB_HOST` environment variable:
+
+**PowerShell:**
+```powershell
+$env:GITLAB_HOST = "your-gitlab-instance.com"
+```
+
+**To make it permanent:**
+```powershell
+[System.Environment]::SetEnvironmentVariable('GITLAB_HOST', 'your-gitlab-instance.com', 'User')
+```
+
+**CMD:**
+```cmd
+set GITLAB_HOST=your-gitlab-instance.com
+```
+
+### Project Configuration
+
+Projects are configured in `%USERPROFILE%\.glab-pipe\projects.json`. This file is created automatically on first run. No projects are hardcoded by default - you must add your own projects either through the TUI interface or by editing the configuration file directly.
 
 ---
 
@@ -126,11 +153,17 @@ Then configure your terminal (Windows Terminal, PowerShell) to use the installed
 glab-pipe
 
 # Pipelines for the project in the current directory
-cd C:\repos\case-gateway
+cd C:\repos\my-project
 glab-pipe .
 
-# Pipelines by GitLab path
-glab-pipe --source dfs/support/dfs-case-management/casemanagement/case-gateway
+# Pipelines by GitLab path (with hostname - recommended)
+glab-pipe --source gitlab.example.com/group/subgroup/project
+
+# Pipelines by GitLab path (without hostname - will use GITLAB_HOST if set)
+glab-pipe --source group/subgroup/project
+
+# Pipelines by full URL
+glab-pipe --source https://gitlab.example.com/group/subgroup/project
 ```
 
 ### Keyboard Shortcuts
@@ -142,14 +175,19 @@ glab-pipe --source dfs/support/dfs-case-management/casemanagement/case-gateway
 | `Enter` | Select project |
 | `Esc` / `q` | Quit |
 
+**Automatic Project Clone**: When you select a project that doesn't exist locally, `glab-pipe` will automatically prompt you to clone it to `~/repos`. This ensures you always have local access to the projects you want to monitor.
+
 #### Pipeline Table
 | Key | Action |
 |-----|--------|
 | `↑` / `↓` or `k` / `j` | Navigate pipelines |
 | `Enter` | Open pipeline jobs |
 | `r` | Manual refresh |
+| `n` | Create new pipeline |
 | `Esc` | Back to main menu |
 | `q` | Quit |
+
+**Automatic Branch Prefix**: When creating a new pipeline, if you enter a ticket number like `CUC-639`, the system will automatically add the `story/` prefix, creating the pipeline on branch `story/CUC-639`. If you enter a full branch name with `/`, it will be used as-is.
 
 #### Job List
 | Key | Action |
@@ -203,6 +241,27 @@ Job Log Modal ──────────── Esc (close modal)
 
 ---
 
+## Automatic Features
+
+### Smart Branch Naming
+When creating a new pipeline, the system intelligently handles branch names:
+- **Ticket numbers**: Enter `CUC-639` → automatically uses `story/CUC-639`
+- **Full branch names**: Enter `feature/new-api` → uses exactly as provided
+- **Branch names with `/`: Enter `hotfix/urgent-fix` → uses exactly as provided
+
+This saves time and ensures consistent branch naming conventions for ticket-based development.
+
+### Automatic Project Clone
+When you select a project from the welcome screen, `glab-pipe` automatically:
+1. Searches for the project in common local directories (`~/repos`, `~/source/repos`, etc.)
+2. If not found locally, prompts you to clone the project
+3. Clones to `~/repos/<project-name>` using `glab repo clone`
+4. Proceeds to show pipelines after successful clone
+
+This ensures you always have local access to monitor pipelines without manual project management.
+
+---
+
 ## Auto-Refresh
 
 The app auto-refreshes every **2 seconds** under the following conditions:
@@ -215,36 +274,50 @@ Auto-refresh stops automatically when no active processes remain.
 
 ---
 
+## Adding Projects
+
+### Via the TUI Interface
+
+When you launch `glab-pipe`, you'll see a welcome screen with two options:
+
+1. **Select Repository...** - Choose from your configured projects
+2. **Choose another...** - Add a new project by entering its path
+
+When you select "Choose another...", you can enter the project path in any of these formats:
+
+- **With hostname** (recommended): `gitlab.example.com/group/subgroup/project`
+- **Without hostname**: `group/subgroup/project` (hostname will be auto-added from GITLAB_HOST if set)
+- **Full URL**: `https://gitlab.example.com/group/subgroup/project`
+
+The system will validate that you have access to the project before adding it to your configuration.
+
+### Via Manual Configuration
+
+You can also edit the configuration file directly (see Project Configuration section below).
+
+---
+
 ## Project Configuration
 
 Projects are loaded from `%USERPROFILE%\.glab-pipe\projects.json`.
 
-The file is created automatically on first run with the default projects:
+The file is created automatically on first run with an empty projects list. You must add your own projects:
 
 ```json
 {
   "projects": [
     {
-      "display_name": "account-processor-api",
-      "full_path": "dfs/support/dfs-case-management/casemanagement/account-processor-api"
-    },
-    {
-      "display_name": "case-connector-api",
-      "full_path": "dfs/support/dfs-case-management/casemanagement/case-connector-api"
-    },
-    {
-      "display_name": "case-gateway",
-      "full_path": "dfs/support/dfs-case-management/casemanagement/case-gateway"
-    },
-    {
-      "display_name": "case-receiver-api",
-      "full_path": "dfs/support/dfs-case-management/casemanagement/case-receiver-api"
+      "display_name": "my-project",
+      "full_path": "gitlab.example.com/group/subgroup/my-project"
     }
   ]
 }
 ```
 
-To add more projects, simply edit this JSON file.
+To add more projects, simply edit this JSON file. Project paths can be specified in three formats:
+- **With hostname** (recommended): `gitlab.example.com/group/subgroup/project`
+- **Without hostname**: `group/subgroup/project` (hostname will be auto-added from GITLAB_HOST if set)
+- **Full URL**: `https://gitlab.example.com/group/subgroup/project`
 
 ---
 
@@ -268,8 +341,11 @@ dist\glab-pipe.exe
 # Open current directory's project
 dist\glab-pipe.exe .
 
-# Open project by GitLab path
-dist\glab-pipe.exe --source dfs/support/dfs-case-management/casemanagement/case-gateway
+# Open project by GitLab path (with hostname - recommended)
+dist\glab-pipe.exe --source gitlab.example.com/group/subgroup/project
+
+# Open project by GitLab path (without hostname - will use GITLAB_HOST if set)
+dist\glab-pipe.exe --source group/subgroup/project
 ```
 
 ---

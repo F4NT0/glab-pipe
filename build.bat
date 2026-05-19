@@ -39,6 +39,6 @@ echo.
 echo  To debug manually:
 echo    dist\glab-pipe.exe
 echo    dist\glab-pipe.exe .
-echo    dist\glab-pipe.exe --source dfs/support/dfs-case-management/casemanagement/case-gateway
+echo    dist\glab-pipe.exe --source group/subgroup/project
 echo.
 pause
