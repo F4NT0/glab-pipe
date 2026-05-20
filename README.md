@@ -1,6 +1,14 @@
-# glab-pipe — GitLab Pipeline Viewer
+<table align="center"><tr><td align="center" width="9999">
 
-Interactive TUI (Terminal User Interface) for viewing and monitoring GitLab CI/CD pipelines on Dell GitLab (`gitlab.example.com`).
+<img src="docs/images/cover.png" alt="glab-pipe main interface" width="900">
+
+**A terminal-native gitlab pipeline manager built with Go**
+
+[![Go Version](https://img.shields.io/badge/Go-1.24%2B-00add8?style=flat-square&logo=go)](https://go.dev)
+[![Platform](https://img.shields.io/badge/Platform-Windows%2011-0078d4?style=flat-square&logo=windows)](https://www.microsoft.com/windows)
+[![Shell](https://img.shields.io/badge/Shell-PowerShell-5391fe?style=flat-square&logo=powershell)](https://learn.microsoft.com/powershell)
+
+</td></tr></table>
 
 ---
 
