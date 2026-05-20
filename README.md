@@ -14,19 +14,37 @@
 
 ## Preview
 
-> _Add example screenshots of the TUI screens here_
-
 ### Welcome Screen — Project Selector
-<!-- ![Welcome Screen](docs/images/welcome.png) -->
+
+<table align="center"><tr><td align="center" width="9999">
+
+<img src="docs/images/welcome.png" alt="glab-pipe main interface" width="900">
+
+</td></tr></table>
 
 ### Pipeline Table
-<!-- ![Pipeline List](docs/images/pipelines.png) -->
+
+<table align="center"><tr><td align="center" width="9999">
+
+<img src="docs/images/pipelines.png" alt="glab-pipe main interface" width="900">
+
+</td></tr></table>
 
 ### Job List
-<!-- ![Job List](docs/images/jobs.png) -->
+
+<table align="center"><tr><td align="center" width="9999">
+
+<img src="docs/images/jobs.png" alt="glab-pipe main interface" width="900">
+
+</td></tr></table>
 
 ### Job Log Modal
-<!-- ![Job Log](docs/images/job-log.png) -->
+
+<table align="center"><tr><td align="center" width="9999">
+
+<img src="docs/images/job-log.png" alt="glab-pipe main interface" width="900">
+
+</td></tr></table>
 
 ---
 
