@@ -18,7 +18,7 @@
 
 <table align="center"><tr><td align="center" width="9999">
 
-<img src="docs/images/welcome.png" alt="glab-pipe main interface" width="900">
+<img src="docs/images/welcome.png" alt="glab-pipe main interface" width="500">
 
 </td></tr></table>
 
@@ -26,7 +26,7 @@
 
 <table align="center"><tr><td align="center" width="9999">
 
-<img src="docs/images/pipelines.png" alt="glab-pipe main interface" width="900">
+<img src="docs/images/pipelines.png" alt="glab-pipe main interface" width="500">
 
 </td></tr></table>
 
@@ -34,7 +34,7 @@
 
 <table align="center"><tr><td align="center" width="9999">
 
-<img src="docs/images/jobs.png" alt="glab-pipe main interface" width="900">
+<img src="docs/images/jobs.png" alt="glab-pipe main interface" width="500">
 
 </td></tr></table>
 
@@ -42,7 +42,7 @@
 
 <table align="center"><tr><td align="center" width="9999">
 
-<img src="docs/images/job-log.png" alt="glab-pipe main interface" width="900">
+<img src="docs/images/job-log.png" alt="glab-pipe main interface" width="500">
 
 </td></tr></table>
 
