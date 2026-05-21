@@ -117,6 +117,19 @@ func View(m *app.Model) string {
 		body = renderCreatePipelineModal(m, w)
 	case app.ScreenClonePrompt:
 		body = renderClonePromptModal(m, w)
+	case app.ScreenJobRun:
+		body = renderJobRunModal(m, w)
+	}
+
+	// Pipeline screen overlays (copy choice)
+	if m.Screen() == app.ScreenPipelines {
+		if m.CopyChoiceOpen() {
+			body = placeOverlay(body, renderCopyChoiceOverlay(m, w), w, m.Height())
+		}
+	}
+	// Create pipeline confirm overlay
+	if m.Screen() == app.ScreenCreatePipeline && m.CreateConfirming() {
+		body = placeOverlay(body, renderCreateConfirmOverlay(m, w), w, m.Height())
 	}
 
 	if m.Loading() || m.TraceLoading() || m.ProjectCloneInProgress() {
@@ -142,7 +155,7 @@ func renderTitle(m *app.Model, w int) string {
 		if p := m.SelectedProject(); p != nil {
 			name = p.DisplayName
 		}
-		breadcrumb = fmt.Sprintf(" glab-pipe  ›  %s  ›  Pipelines ", name)
+		breadcrumb = fmt.Sprintf(" gitlab.example.com  ›  %s  ›  Pipelines ", name)
 	case app.ScreenJobs:
 		name := ""
 		if p := m.SelectedProject(); p != nil {
@@ -152,7 +165,7 @@ func renderTitle(m *app.Model, w int) string {
 		if d := m.Detail(); d != nil {
 			pip = fmt.Sprintf("  ›  Pipeline #%d (%s)", d.ID, d.GitRef)
 		}
-		breadcrumb = fmt.Sprintf(" glab-pipe  ›  %s%s  ›  Jobs ", name, pip)
+		breadcrumb = fmt.Sprintf(" gitlab.example.com  ›  %s%s  ›  Jobs ", name, pip)
 	case app.ScreenJobLog:
 		name := ""
 		if p := m.SelectedProject(); p != nil {
@@ -168,7 +181,21 @@ func renderTitle(m *app.Model, w int) string {
 		if j := m.SelectedJob(); j != nil {
 			jobName = j.Name
 		}
-		breadcrumb = fmt.Sprintf(" glab-pipe  ›  %s  ›  Pipeline %s (%s)  ›  %s ", name, pip, branch, jobName)
+		breadcrumb = fmt.Sprintf(" gitlab.example.com  ›  %s  ›  Pipeline %s (%s)  ›  %s ", name, pip, branch, jobName)
+	case app.ScreenJobRun:
+		name := ""
+		if p := m.SelectedProject(); p != nil {
+			name = p.DisplayName
+		}
+		pip := ""
+		if d := m.Detail(); d != nil {
+			pip = fmt.Sprintf("  ›  Pipeline #%d", d.ID)
+		}
+		action := " Retry"
+		if !m.JobRunIsRetry() {
+			action = " Run"
+		}
+		breadcrumb = fmt.Sprintf(" glab-pipe  ›  %s%s  ›  Job%s ", name, pip, action)
 	case app.ScreenCreatePipeline:
 		name := ""
 		if p := m.SelectedProject(); p != nil {
@@ -201,16 +228,28 @@ func renderStatusBar(m *app.Model, w int) string {
 				helpKey("q") + helpDesc(" Quit")
 		}
 	case app.ScreenPipelines:
-		hints = helpKey("↑/↓") + helpDesc(" Navigate  ") +
-			helpKey("Enter") + helpDesc(" View jobs  ") +
-			helpKey("n") + helpDesc(" New pipeline  ") +
-			helpKey("r") + helpDesc(" Refresh  ") +
-			helpKey("Esc") + helpDesc(" Back  ") +
-			helpKey("q") + helpDesc(" Quit")
+		if m.CopyChoiceOpen() {
+			hints = helpKey("1/b") + helpDesc(" Branch  ") +
+				helpKey("2/w") + helpDesc(" URL  ") +
+				helpKey("Esc") + helpDesc(" Cancel")
+		} else if m.CopyFeedback() != "" {
+			hints = lipgloss.NewStyle().Foreground(green).Render("  " + m.CopyFeedback())
+		} else {
+			hints = helpKey("↑/↓") + helpDesc(" Navigate  ") +
+				helpKey("Enter") + helpDesc(" Jobs  ") +
+				helpKey("n") + helpDesc(" New  ") +
+				helpKey("r") + helpDesc(" Retry  ") +
+				helpKey("u") + helpDesc(" Refresh  ") +
+				helpKey("x") + helpDesc(" Cancel  ") +
+				helpKey("c") + helpDesc(" Copy  ") +
+				helpKey("Esc") + helpDesc(" Back  ") +
+				helpKey("q") + helpDesc(" Quit")
+		}
 	case app.ScreenJobs:
 		hints = helpKey("↑/↓") + helpDesc(" Navigate  ") +
 			helpKey("Enter") + helpDesc(" View logs  ") +
-			helpKey("r") + helpDesc(" Refresh  ") +
+			helpKey("r") + helpDesc(" Run/Retry job  ") +
+			helpKey("u") + helpDesc(" Refresh  ") +
 			helpKey("Esc") + helpDesc(" Back  ") +
 			helpKey("q") + helpDesc(" Quit")
 	case app.ScreenJobLog:
@@ -220,8 +259,17 @@ func renderStatusBar(m *app.Model, w int) string {
 			helpKey("Esc") + helpDesc(" Back  ") +
 			helpKey("q") + helpDesc(" Quit")
 	case app.ScreenCreatePipeline:
-		hints = helpKey("Enter") + helpDesc(" Create  ") +
-			helpKey("Tab") + helpDesc(" Next field  ") +
+		if m.CreateConfirming() {
+			hints = helpKey("Enter") + helpDesc(" Confirm & Run  ") +
+				helpKey("Esc") + helpDesc(" Edit")
+		} else {
+			hints = helpKey("Enter") + helpDesc(" Confirm  ") +
+				helpKey("Tab") + helpDesc(" Next field  ") +
+				helpKey("Esc") + helpDesc(" Cancel  ") +
+				helpKey("q") + helpDesc(" Quit")
+		}
+	case app.ScreenJobRun:
+		hints = helpKey("Enter") + helpDesc(" Run  ") +
 			helpKey("Esc") + helpDesc(" Cancel  ") +
 			helpKey("q") + helpDesc(" Quit")
 	case app.ScreenClonePrompt:
@@ -656,9 +704,198 @@ func renderJobLogModal(m *app.Model, w int) string {
 	return lipgloss.JoinVertical(lipgloss.Left, headerBox, traceContent)
 }
 
+// ── Pipeline screen overlays ─────────────────────────────────────────────────────
+
+func renderCopyChoiceOverlay(m *app.Model, w int) string {
+	modalW := 36
+	if modalW > w-4 {
+		modalW = w - 4
+	}
+
+	var pip *gl.PipelineListItem
+	if pips := m.Pipelines(); len(pips) > 0 {
+		p := pips[m.PipelineCursor()]
+		pip = &p
+	}
+
+	branch := "(none)"
+	if pip != nil {
+		branch = pip.GitRef
+		if len(branch) > modalW-18 {
+			branch = branch[:modalW-21] + "…"
+		}
+	}
+
+	sep := lipgloss.NewStyle().Foreground(gray).Render(strings.Repeat("─", modalW-4))
+	title := lipgloss.NewStyle().Foreground(white).Bold(true).Render("  Copy Options")
+
+	opt1 := lipgloss.NewStyle().Foreground(teal).Bold(true).Render("  1 / b") +
+		lipgloss.NewStyle().Foreground(white).Render("  Branch name: ") +
+		lipgloss.NewStyle().Foreground(yellow).Render(branch)
+	opt2 := lipgloss.NewStyle().Foreground(teal).Bold(true).Render("  2 / w") +
+		lipgloss.NewStyle().Foreground(white).Render("  Pipeline URL")
+	esc := lipgloss.NewStyle().Foreground(gray).Render("  Esc  Cancel")
+
+	content := strings.Join([]string{title, sep, opt1, opt2, "", esc}, "\n")
+
+	return lipgloss.NewStyle().
+		Border(lipgloss.RoundedBorder()).
+		BorderForeground(cyan).
+		Width(modalW).
+		Padding(0, 1).
+		Render(content)
+}
+
+func renderCreateConfirmOverlay(m *app.Model, w int) string {
+	modalW := 56
+	if modalW > w-4 {
+		modalW = w - 4
+	}
+
+	displayBranch := m.CreatePipelineDisplayBranch()
+	if displayBranch == "" {
+		displayBranch = m.CreatePipelineBranch()
+	}
+
+	sep := lipgloss.NewStyle().Foreground(gray).Render(strings.Repeat("─", modalW-4))
+	title := lipgloss.NewStyle().Foreground(white).Bold(true).Render("  Confirm Pipeline")
+
+	branchLine := lipgloss.NewStyle().Foreground(gray).Render("  Branch: ") +
+		lipgloss.NewStyle().Foreground(yellow).Bold(true).Render(displayBranch)
+
+	var lines []string
+	lines = append(lines, title, sep, branchLine)
+
+	// Parse and list variables
+	vars := m.CreatePipelineVariables()
+	if vars != "" {
+		lines = append(lines, lipgloss.NewStyle().Foreground(gray).Render("  Variables:"))
+		for _, v := range strings.Split(vars, ",") {
+			v = strings.TrimSpace(v)
+			if v == "" {
+				continue
+			}
+			parts := strings.SplitN(v, ":", 2)
+			if len(parts) == 2 {
+				k := strings.TrimSpace(parts[0])
+				val := strings.TrimSpace(parts[1])
+				lines = append(lines, lipgloss.NewStyle().Foreground(white).Render(
+					fmt.Sprintf("    %s = %s", k, val),
+				))
+			} else {
+				lines = append(lines, lipgloss.NewStyle().Foreground(white).Render("    "+v))
+			}
+		}
+	} else {
+		lines = append(lines, lipgloss.NewStyle().Foreground(gray).Render("  Variables: (none)"))
+	}
+
+	lines = append(lines, "")
+	lines = append(lines, lipgloss.NewStyle().Foreground(gray).Render("  Enter to run  ·  Esc to edit"))
+
+	return lipgloss.NewStyle().
+		Border(lipgloss.RoundedBorder()).
+		BorderForeground(green).
+		Width(modalW).
+		Padding(0, 1).
+		Render(strings.Join(lines, "\n"))
+}
+
+// renderTitledBox draws a rounded box whose title is embedded in the top border.
+func renderTitledBox(title, content string, borderColor lipgloss.Color, totalW int) string {
+	innerW := totalW - 2
+	titleStr := " " + title + " "
+	titleLen := len([]rune(titleStr))
+	rightDashes := innerW - 1 - titleLen
+	if rightDashes < 0 {
+		rightDashes = 0
+	}
+
+	bc := lipgloss.NewStyle().Foreground(borderColor)
+
+	top := bc.Render("╭─" + titleStr + strings.Repeat("─", rightDashes) + "╮")
+	bot := bc.Render("╰" + strings.Repeat("─", innerW) + "╯")
+	padLine := bc.Render("│") + strings.Repeat(" ", innerW) + bc.Render("│")
+
+	var rows []string
+	rows = append(rows, top, padLine)
+	for _, line := range strings.Split(content, "\n") {
+		lw := lipgloss.Width(line)
+		pad := innerW - 2 - lw
+		if pad < 0 {
+			pad = 0
+		}
+		rows = append(rows, bc.Render("│")+" "+line+strings.Repeat(" ", pad)+" "+bc.Render("│"))
+	}
+	rows = append(rows, padLine, bot)
+	return strings.Join(rows, "\n")
+}
+
 // ── Create Pipeline Modal ───────────────────────────────────────────────────────
 
 func renderCreatePipelineModal(m *app.Model, w int) string {
+	modalW := 62
+	if modalW > w-4 {
+		modalW = w - 4
+	}
+
+	var lines []string
+
+	// Branch input
+	branchRaw := m.CreatePipelineBranch()
+	var branchLine string
+	if m.CreatePipelineInputField() == 0 {
+		branchLine = lipgloss.NewStyle().Foreground(cyan).Render("Branch: ") +
+			lipgloss.NewStyle().Foreground(white).Bold(true).Render(branchRaw+"█")
+	} else {
+		branchLine = lipgloss.NewStyle().Foreground(cyan).Render("Branch: ") +
+			lipgloss.NewStyle().Foreground(white).Render(branchRaw)
+	}
+	lines = append(lines, branchLine)
+
+	// Normalized branch preview
+	displayBranch := m.CreatePipelineDisplayBranch()
+	if displayBranch != "" && displayBranch != branchRaw {
+		lines = append(lines,
+			lipgloss.NewStyle().Foreground(gray).Render("→ Will use: ")+
+				lipgloss.NewStyle().Foreground(yellow).Render(displayBranch))
+	}
+
+	lines = append(lines, "")
+
+	// Variables input
+	varRaw := m.CreatePipelineVariables()
+	var varLine string
+	if m.CreatePipelineInputField() == 1 {
+		varLine = lipgloss.NewStyle().Foreground(cyan).Render("Variables: ") +
+			lipgloss.NewStyle().Foreground(white).Bold(true).Render(varRaw+"█")
+	} else if varRaw == "" {
+		varLine = lipgloss.NewStyle().Foreground(cyan).Render("Variables: ") +
+			lipgloss.NewStyle().Foreground(gray).Render("(optional — Tab to focus)")
+	} else {
+		varLine = lipgloss.NewStyle().Foreground(cyan).Render("Variables: ") +
+			lipgloss.NewStyle().Foreground(white).Render(varRaw)
+	}
+	lines = append(lines, varLine)
+
+	// Error
+	if m.CreatePipelineError() != "" {
+		lines = append(lines, "")
+		lines = append(lines, lipgloss.NewStyle().Foreground(red).Render(m.CreatePipelineError()))
+	}
+
+	lines = append(lines, "")
+	lines = append(lines,
+		lipgloss.NewStyle().Foreground(gray).Render("CUC-690 → story/CUC-690   FY27_0503 → release/FY27_0503"),
+		lipgloss.NewStyle().Foreground(gray).Render("Variables: key1:value1,key2:value2"),
+	)
+
+	return renderTitledBox("New Pipeline", strings.Join(lines, "\n"), white, modalW)
+}
+
+// ── Job Run Modal ───────────────────────────────────────────────────────────────
+
+func renderJobRunModal(m *app.Model, w int) string {
 	modalW := 60
 	if modalW > w-4 {
 		modalW = w - 4
@@ -667,68 +904,46 @@ func renderCreatePipelineModal(m *app.Model, w int) string {
 	var sb strings.Builder
 
 	// Title
-	title := lipgloss.NewStyle().Foreground(white).Bold(true).Render("  Create New Pipeline  ")
+	titleText := " Run Job "
+	if m.JobRunIsRetry() {
+		titleText = " Retry Job "
+	}
+	title := lipgloss.NewStyle().Foreground(white).Bold(true).Render("  " + titleText + " ")
 	sb.WriteString(title + "\n")
 
 	// Separator
 	sep := lipgloss.NewStyle().Foreground(gray).Render(strings.Repeat("─", modalW-4))
 	sb.WriteString(sep + "\n")
 
-	// Branch input
-	branchLabel := lipgloss.NewStyle().Foreground(cyan).Render("  Branch:  ")
-	branchInput := m.CreatePipelineBranch()
-	var branchDisplay string
-	if m.CreatePipelineInputField() == 0 {
-		branchInput += "█"
-		branchDisplay = lipgloss.NewStyle().Foreground(white).Bold(true).Render(branchInput)
-	} else {
-		branchDisplay = lipgloss.NewStyle().Foreground(white).Render(branchInput)
-	}
-	sb.WriteString(branchLabel + branchDisplay + "\n")
+	// Job ID info
+	jobIDText := lipgloss.NewStyle().Foreground(gray).Render(fmt.Sprintf("  Job ID: %d", m.JobRunJobID()))
+	sb.WriteString(jobIDText + "\n")
 
-	// Show normalized branch name if different from input
-	displayBranch := m.CreatePipelineDisplayBranch()
-	if displayBranch != "" && displayBranch != branchInput {
-		normalizedText := lipgloss.NewStyle().Foreground(gray).Render("  → Will use: " + displayBranch)
-		sb.WriteString(normalizedText + "\n")
-	}
-
-	// Variables input (optional)
+	// Variables input
 	varLabel := lipgloss.NewStyle().Foreground(cyan).Render("  Variables (optional):  ")
-	varInput := m.CreatePipelineVariables()
+	varInput := m.JobRunVariables()
 	if varInput == "" {
 		varInput = "(press Enter to skip)"
 	}
-	var varDisplay string
-	if m.CreatePipelineInputField() == 1 {
-		if m.CreatePipelineVariables() == "" {
-			varInput = "█"
-		} else {
-			varInput += "█"
-		}
-		varDisplay = lipgloss.NewStyle().Foreground(white).Bold(true).Render(varInput)
-	} else {
-		varDisplay = lipgloss.NewStyle().Foreground(gray).Render(varInput)
-	}
-	sb.WriteString(varLabel + varDisplay + "\n")
+	varInput += "█"
+	varDisplay := lipgloss.NewStyle().Foreground(white).Bold(true).Render(varInput)
+	sb.WriteString("\n" + varLabel + varDisplay + "\n")
 
 	// Error message
-	if m.CreatePipelineError() != "" {
-		errorMsg := lipgloss.NewStyle().Foreground(red).Render("  " + m.CreatePipelineError())
+	if m.JobRunError() != "" {
+		errorMsg := lipgloss.NewStyle().Foreground(red).Render("  " + m.JobRunError())
 		sb.WriteString("\n" + errorMsg + "\n")
 	}
 
 	// Help text
 	helpText := lipgloss.NewStyle().Foreground(gray).Render("  Variables format: key1:value1,key2:value2")
 	sb.WriteString("\n" + helpText + "\n")
-	branchHelp := lipgloss.NewStyle().Foreground(gray).Render("  Enter only the ticket code (e.g. CUC-690) → becomes story/CUC-690")
-	sb.WriteString(branchHelp + "\n")
 
 	modalContent := sb.String()
 
 	return lipgloss.NewStyle().
 		Border(lipgloss.RoundedBorder()).
-		BorderForeground(cyan).
+		BorderForeground(yellow).
 		Width(modalW).
 		Padding(1, 1).
 		Render(modalContent)
