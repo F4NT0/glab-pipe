@@ -9,6 +9,7 @@ import (
 	"path/filepath"
 	"regexp"
 	"strings"
+	"sync"
 
 	"gitlab-pipeline-tui/internal/config"
 )
@@ -23,52 +24,55 @@ func ProjectList() []Project {
 	return config.ProjectList()
 }
 
-// getGitLabHost returns the GitLab hostname from environment variable or from glab config.
-// Users can set GITLAB_HOST environment variable to configure their GitLab instance.
-// If not set, tries to get the hostname from glab configuration.
-// Returns empty string if no hostname can be determined, allowing glab to use its default.
-func getGitLabHost() string {
-	// First check environment variable
-	if host := os.Getenv("GITLAB_HOST"); host != "" {
-		return host
-	}
+// GetGitLabHost is the exported version of getGitLabHost for use by other packages.
+func GetGitLabHost() string { return getGitLabHost() }
 
-	// Try to get from glab auth status - use CombinedOutput so we get output even on non-zero exit
-	// (glab auth status exits non-zero when ANY configured instance has issues, even if others are fine)
-	cmd := exec.Command("glab", "auth", "status")
-	output, _ := cmd.CombinedOutput()
-	if len(output) > 0 {
-		// Parse the output to find the authenticated host
-		// Priority: prefer hosts that have a "Logged in to" confirmation
-		// glab auth status output format:
-		//   gitlab.example.com
-		//     ✓ Logged in to gitlab.example.com as User (config.yml)
-		lines := strings.Split(string(output), "\n")
-		var loggedInHost string
-		for _, line := range lines {
-			line = strings.TrimSpace(line)
-			// Look for "Logged in to <hostname>" — this is the most reliable indicator
-			if strings.Contains(line, "Logged in to") {
-				parts := strings.Fields(line)
-				for i, part := range parts {
-					if part == "to" && i+1 < len(parts) {
-						host := strings.Trim(parts[i+1], ".,;")
-						if host != "" && host != "gitlab.com" {
-							return host // Return immediately — non-public host with confirmed login
-						}
-						if host == "gitlab.com" && loggedInHost == "" {
-							loggedInHost = host // Fallback to gitlab.com if nothing better found
+// cachedHost holds the resolved GitLab hostname after the first call.
+var (
+	cachedHostOnce  sync.Once
+	cachedHostValue string
+)
+
+// getGitLabHost returns the GitLab hostname from environment variable or from glab config.
+// The result is cached after the first call so the subprocess is never run more than once.
+func getGitLabHost() string {
+	cachedHostOnce.Do(func() {
+		// First check environment variable
+		if host := os.Getenv("GITLAB_HOST"); host != "" {
+			cachedHostValue = host
+			return
+		}
+
+		// Try to get from glab auth status - use CombinedOutput so we get output even on non-zero exit
+		cmd := exec.Command("glab", "auth", "status")
+		output, _ := cmd.CombinedOutput()
+		if len(output) > 0 {
+			lines := strings.Split(string(output), "\n")
+			var loggedInHost string
+			for _, line := range lines {
+				line = strings.TrimSpace(line)
+				if strings.Contains(line, "Logged in to") {
+					parts := strings.Fields(line)
+					for i, part := range parts {
+						if part == "to" && i+1 < len(parts) {
+							host := strings.Trim(parts[i+1], ".,;")
+							if host != "" && host != "gitlab.com" {
+								cachedHostValue = host
+								return
+							}
+							if host == "gitlab.com" && loggedInHost == "" {
+								loggedInHost = host
+							}
 						}
 					}
 				}
 			}
+			if loggedInHost != "" {
+				cachedHostValue = loggedInHost
+			}
 		}
-		if loggedInHost != "" {
-			return loggedInHost
-		}
-	}
-
-	return "" // Let glab use its default configuration
+	})
+	return cachedHostValue
 }
 
 // ── Raw JSON types from `glab ci list -F json` ────────────────────────────────

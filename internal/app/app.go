@@ -104,10 +104,11 @@ type Model struct {
 	createPipelineDisplayBranch string // The normalized branch name that will actually be used
 
 	// Job run modal
-	jobRunJobID     uint64 // the job being run/retried
-	jobRunVariables string // variables in key:value,key:value format
-	jobRunError     string // error message if job run fails
-	jobRunIsRetry   bool   // true if retry, false if manual trigger
+	jobRunJobID        uint64 // the job being run/retried
+	jobRunVariables    string // variables in key:value,key:value format
+	jobRunError        string // error message if job run fails
+	jobRunIsRetry      bool   // true if retry, false if manual trigger
+	jobRunConfirming   bool   // true when confirm step is shown
 
 	// Pipeline screen overlays
 	copyChoiceOpen bool   // whether copy-choice overlay is visible
@@ -298,8 +299,10 @@ func (m Model) Update(msg tea.Msg) (Model, tea.Cmd) {
 			m.jobRunJobID = 0
 			m.jobRunVariables = ""
 			m.jobRunError = ""
+			m.jobRunConfirming = false
 			return m, tea.Batch(m.spinner.Tick, m.loadDetail(m.detail.ID))
 		} else {
+			m.jobRunConfirming = false
 			m.jobRunError = msg.error
 		}
 
@@ -666,6 +669,21 @@ func (m Model) handleJobLogKey(key string) (Model, tea.Cmd) {
 // ── Screen: Job Run ─────────────────────────────────────────────────────────────
 
 func (m Model) handleJobRunKey(key string) (Model, tea.Cmd) {
+	// Confirm step — block editing, only accept Enter or Esc
+	if m.jobRunConfirming {
+		switch key {
+		case "ctrl+c":
+			return m, tea.Quit
+		case "esc":
+			m.jobRunConfirming = false
+		case "enter":
+			m.loading = true
+			m.jobRunError = ""
+			return m, tea.Batch(m.spinner.Tick, m.runJob())
+		}
+		return m, nil
+	}
+
 	switch key {
 	case "ctrl+c", "q":
 		return m, tea.Quit
@@ -675,11 +693,11 @@ func (m Model) handleJobRunKey(key string) (Model, tea.Cmd) {
 		m.jobRunJobID = 0
 		m.jobRunVariables = ""
 		m.jobRunError = ""
+		m.jobRunConfirming = false
 	case "enter":
-		// Run/retry the job
-		m.loading = true
+		// Go to confirm step
+		m.jobRunConfirming = true
 		m.jobRunError = ""
-		return m, tea.Batch(m.spinner.Tick, m.runJob())
 	case "backspace":
 		if len(m.jobRunVariables) > 0 {
 			m.jobRunVariables = m.jobRunVariables[:len(m.jobRunVariables)-1]
@@ -1092,14 +1110,16 @@ func (m *Model) CreatePipelineDisplayBranch() string { return m.createPipelineDi
 func (m *Model) CreateConfirming() bool              { return m.createConfirming }
 
 // Pipeline overlays
-func (m *Model) CopyChoiceOpen() bool  { return m.copyChoiceOpen }
-func (m *Model) CopyFeedback() string  { return m.copyFeedback }
+func (m *Model) CopyChoiceOpen() bool      { return m.copyChoiceOpen }
+func (m *Model) CopyFeedback() string      { return m.copyFeedback }
+func (m *Model) HasRunningPipeline() bool  { return m.hasRunningPipeline() }
 
 // Job Run
-func (m *Model) JobRunJobID() uint64   { return m.jobRunJobID }
-func (m *Model) JobRunVariables() string { return m.jobRunVariables }
-func (m *Model) JobRunError() string     { return m.jobRunError }
-func (m *Model) JobRunIsRetry() bool     { return m.jobRunIsRetry }
+func (m *Model) JobRunJobID() uint64      { return m.jobRunJobID }
+func (m *Model) JobRunVariables() string  { return m.jobRunVariables }
+func (m *Model) JobRunError() string      { return m.jobRunError }
+func (m *Model) JobRunIsRetry() bool      { return m.jobRunIsRetry }
+func (m *Model) JobRunConfirming() bool   { return m.jobRunConfirming }
 
 // Clone Prompt
 func (m *Model) ProjectCloneRequested() bool  { return m.projectCloneRequested }
