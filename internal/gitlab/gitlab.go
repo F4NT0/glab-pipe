@@ -3,11 +3,13 @@ package gitlab
 import (
 	"encoding/json"
 	"fmt"
+	"net/url"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"regexp"
 	"strings"
+	"sync"
 
 	"gitlab-pipeline-tui/internal/config"
 )
@@ -22,52 +24,55 @@ func ProjectList() []Project {
 	return config.ProjectList()
 }
 
-// getGitLabHost returns the GitLab hostname from environment variable or from glab config.
-// Users can set GITLAB_HOST environment variable to configure their GitLab instance.
-// If not set, tries to get the hostname from glab configuration.
-// Returns empty string if no hostname can be determined, allowing glab to use its default.
-func getGitLabHost() string {
-	// First check environment variable
-	if host := os.Getenv("GITLAB_HOST"); host != "" {
-		return host
-	}
+// GetGitLabHost is the exported version of getGitLabHost for use by other packages.
+func GetGitLabHost() string { return getGitLabHost() }
 
-	// Try to get from glab auth status - use CombinedOutput so we get output even on non-zero exit
-	// (glab auth status exits non-zero when ANY configured instance has issues, even if others are fine)
-	cmd := exec.Command("glab", "auth", "status")
-	output, _ := cmd.CombinedOutput()
-	if len(output) > 0 {
-		// Parse the output to find the authenticated host
-		// Priority: prefer hosts that have a "Logged in to" confirmation
-		// glab auth status output format:
-		//   gitlab.example.com
-		//     ✓ Logged in to gitlab.example.com as User (config.yml)
-		lines := strings.Split(string(output), "\n")
-		var loggedInHost string
-		for _, line := range lines {
-			line = strings.TrimSpace(line)
-			// Look for "Logged in to <hostname>" — this is the most reliable indicator
-			if strings.Contains(line, "Logged in to") {
-				parts := strings.Fields(line)
-				for i, part := range parts {
-					if part == "to" && i+1 < len(parts) {
-						host := strings.Trim(parts[i+1], ".,;")
-						if host != "" && host != "gitlab.com" {
-							return host // Return immediately — non-public host with confirmed login
-						}
-						if host == "gitlab.com" && loggedInHost == "" {
-							loggedInHost = host // Fallback to gitlab.com if nothing better found
+// cachedHost holds the resolved GitLab hostname after the first call.
+var (
+	cachedHostOnce  sync.Once
+	cachedHostValue string
+)
+
+// getGitLabHost returns the GitLab hostname from environment variable or from glab config.
+// The result is cached after the first call so the subprocess is never run more than once.
+func getGitLabHost() string {
+	cachedHostOnce.Do(func() {
+		// First check environment variable
+		if host := os.Getenv("GITLAB_HOST"); host != "" {
+			cachedHostValue = host
+			return
+		}
+
+		// Try to get from glab auth status - use CombinedOutput so we get output even on non-zero exit
+		cmd := exec.Command("glab", "auth", "status")
+		output, _ := cmd.CombinedOutput()
+		if len(output) > 0 {
+			lines := strings.Split(string(output), "\n")
+			var loggedInHost string
+			for _, line := range lines {
+				line = strings.TrimSpace(line)
+				if strings.Contains(line, "Logged in to") {
+					parts := strings.Fields(line)
+					for i, part := range parts {
+						if part == "to" && i+1 < len(parts) {
+							host := strings.Trim(parts[i+1], ".,;")
+							if host != "" && host != "gitlab.com" {
+								cachedHostValue = host
+								return
+							}
+							if host == "gitlab.com" && loggedInHost == "" {
+								loggedInHost = host
+							}
 						}
 					}
 				}
 			}
+			if loggedInHost != "" {
+				cachedHostValue = loggedInHost
+			}
 		}
-		if loggedInHost != "" {
-			return loggedInHost
-		}
-	}
-
-	return "" // Let glab use its default configuration
+	})
+	return cachedHostValue
 }
 
 // ── Raw JSON types from `glab ci list -F json` ────────────────────────────────
@@ -141,6 +146,20 @@ func glab(args ...string) (string, error) {
 		return "", fmt.Errorf("failed to spawn glab – make sure it is installed and PATH: %w", err)
 	}
 	return string(out), nil
+}
+
+// apiProjectID returns the URL-encoded project namespace/name suitable for
+// use in `glab api` REST endpoints (e.g. "group%2Fsubgroup%2Fproject").
+// It strips the hostname prefix produced by normalizeProjectPath.
+func apiProjectID(fullPath string) string {
+	normalized := normalizeProjectPath(fullPath)
+	// Strip leading hostname (first component that contains a dot)
+	parts := strings.SplitN(normalized, "/", 2)
+	projectPath := normalized
+	if len(parts) == 2 && strings.Contains(parts[0], ".") {
+		projectPath = parts[1]
+	}
+	return url.PathEscape(projectPath)
 }
 
 // normalizeProjectPath ensures the project path includes the hostname.
@@ -247,6 +266,11 @@ func normalizeBranchName(branch string) string {
 		}
 	}
 
+	// Add release/ for FY... fiscal-year branches
+	if strings.HasPrefix(strings.ToUpper(branch), "FY") {
+		return "release/" + branch
+	}
+
 	// Only add story/ for CUC-XXX pattern
 	if matched, _ := regexp.MatchString(`^CUC-\d+`, branch); matched {
 		return "story/" + branch
@@ -310,6 +334,58 @@ func CreatePipeline(fullPath string, branch string, variables string) (uint64, e
 	}
 
 	return 0, fmt.Errorf("could not parse pipeline ID from glab output: %s", raw)
+}
+
+// CancelPipeline cancels a running pipeline via the GitLab API.
+func CancelPipeline(fullPath string, pipelineID uint64) error {
+	pid := apiProjectID(fullPath)
+	endpoint := fmt.Sprintf("projects/%s/pipelines/%d/cancel", pid, pipelineID)
+	_, err := glab("api", "-X", "POST", endpoint)
+	return err
+}
+
+// RunJob triggers or retries a job with optional variables.
+// isRetry: true to retry a failed job, false to trigger a manual job.
+// variables: comma-separated key:value pairs (e.g., "VAR1:value1,VAR2:value2").
+func RunJob(fullPath string, jobID uint64, isRetry bool, variables string) error {
+	pid := apiProjectID(fullPath)
+
+	// Build API endpoint
+	// For manual jobs: POST /projects/:id/jobs/:job_id/play
+	// For retry: POST /projects/:id/jobs/:job_id/retry
+	endpoint := fmt.Sprintf("projects/%s/jobs/%d", pid, jobID)
+	if isRetry {
+		endpoint += "/retry"
+	} else {
+		endpoint += "/play"
+	}
+
+	// Build glab api command
+	args := []string{"api", "-X", "POST", endpoint}
+
+	// Add variables if provided
+	if variables != "" {
+		// Parse variables into key:value pairs
+		vars := strings.Split(variables, ",")
+		for _, v := range vars {
+			v = strings.TrimSpace(v)
+			if v == "" {
+				continue
+			}
+			// Split on first colon to separate key and value
+			parts := strings.SplitN(v, ":", 2)
+			if len(parts) == 2 {
+				key := strings.TrimSpace(parts[0])
+				val := strings.TrimSpace(parts[1])
+				if key != "" {
+					args = append(args, "-f", fmt.Sprintf("%s=%s", key, val))
+				}
+			}
+		}
+	}
+
+	_, err := glab(args...)
+	return err
 }
 
 // FindProjectByPath resolves the GitLab project path from a local git repo.

@@ -80,6 +80,13 @@ var (
 	colorWhite      = lipgloss.Color("15")
 )
 
+// ── Nerd Font icons (matching the main app's StatusIcon palette) ──────────────
+const (
+	iconOK      = "\uf05d" // nf-fa-check_circle   (green)
+	iconFail    = "\uf52f" // nf-fa-times_circle   (red)
+	iconWarning = "\uf2be" // nf-fa-user_circle_o  (yellow)
+)
+
 // ── Check result types ────────────────────────────────────────────────────────
 
 type CheckStatus int
@@ -92,9 +99,8 @@ const (
 )
 
 type Check struct {
-	Name    string
-	Status  CheckStatus
-	Message string
+	Name   string
+	Status CheckStatus
 }
 
 // ── Install step messages ─────────────────────────────────────────────────────
@@ -313,25 +319,25 @@ func (m Model) viewChecking() string {
 func (m Model) viewConfirm() string {
 	var checksStr strings.Builder
 	for _, c := range m.checks {
-		var icon, col string
+		var ico string
+		var col lipgloss.Color
 		switch c.Status {
 		case CheckOK:
-			icon = "✓"
-			col = string(colorGreen)
+			ico = iconOK
+			col = colorGreen
 		case CheckWarning:
-			icon = "⚠"
-			col = string(colorYellow)
+			ico = iconWarning
+			col = colorYellow
 		case CheckError:
-			icon = "✗"
-			col = string(colorRed)
+			ico = iconFail
+			col = colorRed
 		default:
-			icon = "?"
-			col = string(colorGray)
+			ico = iconWarning
+			col = colorGray
 		}
-		iconRendered := lipgloss.NewStyle().Foreground(lipgloss.Color(col)).Render(icon)
+		iconRendered := lipgloss.NewStyle().Foreground(col).Render(ico)
 		nameRendered := lipgloss.NewStyle().Foreground(colorFg).Render(c.Name)
-		msgRendered := lipgloss.NewStyle().Foreground(colorFgMuted).Render(c.Message)
-		checksStr.WriteString(fmt.Sprintf("  %s  %s — %s\n", iconRendered, nameRendered, msgRendered))
+		checksStr.WriteString(fmt.Sprintf("  %s  %s\n", iconRendered, nameRendered))
 	}
 
 	opt0Style := lipgloss.NewStyle().Foreground(colorFg)
@@ -465,76 +471,59 @@ func runChecks() tea.Cmd {
 	return func() tea.Msg {
 		checks := []Check{
 			checkGlab(),
-			checkNerdFont(),
 			checkPowerShell(),
+			checkTerminalFont(),
 		}
 		return checksCompleteMsg{checks}
 	}
 }
 
 func checkGlab() Check {
-	c := Check{Name: "glab CLI"}
-	out, err := exec.Command("glab", "version").Output()
+	c := Check{Name: "glab"}
+	_, err := exec.Command("glab", "version").Output()
 	if err != nil {
 		c.Status = CheckError
-		c.Message = "Not found. Install with: scoop install glab"
 		return c
 	}
-	// Check if configured
-	authOut, err := exec.Command("glab", "auth", "status").Output()
-	if err != nil {
-		// glab auth status returns non-zero if not logged in
-		authOut = []byte{}
+	c.Status = CheckOK
+	return c
+}
+
+func checkPowerShell() Check {
+	c := Check{Name: "PowerShell"}
+	if os.Getenv("PSModulePath") != "" {
+		c.Status = CheckOK
+		return c
 	}
-	host := getGitLabHost()
-	if host != "" {
-		if strings.Contains(string(authOut), host) || strings.Contains(string(authOut), "logged in") {
-			c.Status = CheckOK
-			c.Message = strings.TrimSpace(strings.Split(string(out), "\n")[0])
-		} else {
-			c.Status = CheckWarning
-			c.Message = fmt.Sprintf("Installed but may not be configured for %s", host)
-		}
+	_, err := exec.Command("powershell", "-NoProfile", "-Command", "exit").Output()
+	if err == nil {
+		c.Status = CheckOK
 	} else {
-		if strings.Contains(string(authOut), "logged in") {
-			c.Status = CheckOK
-			c.Message = strings.TrimSpace(strings.Split(string(out), "\n")[0])
-		} else {
-			c.Status = CheckWarning
-			c.Message = "Installed but may not be configured"
-		}
+		c.Status = CheckWarning
 	}
 	return c
 }
 
-func checkNerdFont() Check {
-	// Fonts cannot be reliably detected from Go — warn the user instead.
-	return Check{
-		Name:    "Nerd Font",
-		Status:  CheckWarning,
-		Message: "Cannot be verified automatically. Icons won't render correctly without a Nerd Font.",
-	}
-}
-
-func checkPowerShell() Check {
-	shell := os.Getenv("PSModulePath")
-	if shell != "" || isPowerShell() {
-		return Check{
-			Name:    "PowerShell",
-			Status:  CheckOK,
-			Message: "Detected",
+func checkTerminalFont() Check {
+	c := Check{Name: "Terminal Font"}
+	// On Windows, try to read the console font name from registry.
+	out, err := exec.Command("powershell", "-NoProfile", "-Command",
+		`(Get-ItemProperty 'HKCU:\Console').FaceName`).Output()
+	if err == nil {
+		font := strings.TrimSpace(string(out))
+		if font != "" && strings.Contains(strings.ToLower(font), "nerd") {
+			c.Status = CheckOK
+			c.Name = "Terminal Font (" + font + ")"
+			return c
+		}
+		if font != "" {
+			c.Status = CheckWarning
+			c.Name = "Terminal Font (" + font + ")"
+			return c
 		}
 	}
-	return Check{
-		Name:    "PowerShell",
-		Status:  CheckWarning,
-		Message: "Recommended for best color and icon support",
-	}
-}
-
-func isPowerShell() bool {
-	_, err := exec.Command("powershell", "-Command", "$PSVersionTable").Output()
-	return err == nil
+	c.Status = CheckWarning
+	return c
 }
 
 func getInstallDir() string {

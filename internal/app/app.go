@@ -8,6 +8,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/atotto/clipboard"
 	"github.com/charmbracelet/bubbles/spinner"
 	"github.com/charmbracelet/bubbles/viewport"
 	tea "github.com/charmbracelet/bubbletea"
@@ -27,6 +28,7 @@ const (
 	ScreenJobLog                // modal with job trace logs
 	ScreenCreatePipeline        // modal for creating new pipeline
 	ScreenClonePrompt           // modal for prompting project clone
+	ScreenJobRun                // modal for running/retrying a job
 )
 
 // ── Auto-refresh timing ───────────────────────────────────────────────────────
@@ -43,6 +45,14 @@ type jobTraceLoadedMsg struct {
 }
 type pipelineCreatedMsg struct {
 	pipelineID uint64
+}
+type pipelineCanceledMsg struct{}
+type copyDoneMsg struct {
+	feedback string
+}
+type jobRunMsg struct{
+	success bool
+	error   string
 }
 type tickMsg time.Time
 type errMsg struct{ err error }
@@ -92,6 +102,20 @@ type Model struct {
 	createPipelineError         string
 	createPipelineInputField    int    // 0 = branch, 1 = variables
 	createPipelineDisplayBranch string // The normalized branch name that will actually be used
+
+	// Job run modal
+	jobRunJobID        uint64 // the job being run/retried
+	jobRunVariables    string // variables in key:value,key:value format
+	jobRunError        string // error message if job run fails
+	jobRunIsRetry      bool   // true if retry, false if manual trigger
+	jobRunConfirming   bool   // true when confirm step is shown
+
+	// Pipeline screen overlays
+	copyChoiceOpen bool   // whether copy-choice overlay is visible
+	copyFeedback   string // brief feedback after clipboard copy
+
+	// Create pipeline confirm step
+	createConfirming bool // true when showing confirm overlay
 
 	// Project clone functionality
 	projectCloneRequested  bool   // Whether clone was requested
@@ -254,9 +278,33 @@ func (m Model) Update(msg tea.Msg) (Model, tea.Cmd) {
 	case pipelineCreatedMsg:
 		m.loading = false
 		m.createPipelineError = ""
+		m.createConfirming = false
 		m.screen = ScreenPipelines
 		// Reload pipelines to show the newly created one
 		return m, tea.Batch(m.spinner.Tick, m.loadPipelines())
+
+	case pipelineCanceledMsg:
+		m.loading = false
+		return m, tea.Batch(m.spinner.Tick, m.loadPipelines())
+
+	case copyDoneMsg:
+		m.copyFeedback = msg.feedback
+		m.copyChoiceOpen = false
+
+	case jobRunMsg:
+		m.loading = false
+		if msg.success {
+			// Job run/retry successful, go back to jobs and refresh
+			m.screen = ScreenJobs
+			m.jobRunJobID = 0
+			m.jobRunVariables = ""
+			m.jobRunError = ""
+			m.jobRunConfirming = false
+			return m, tea.Batch(m.spinner.Tick, m.loadDetail(m.detail.ID))
+		} else {
+			m.jobRunConfirming = false
+			m.jobRunError = msg.error
+		}
 
 	case projectCheckMsg:
 		if msg.exists {
@@ -328,6 +376,8 @@ func (m Model) handleKey(key string) (Model, tea.Cmd) {
 		return m.handleCreatePipelineKey(key)
 	case ScreenClonePrompt:
 		return m.handleClonePromptKey(key)
+	case ScreenJobRun:
+		return m.handleJobRunKey(key)
 	}
 	return m, nil
 }
@@ -377,6 +427,16 @@ func (m Model) handleWelcomeKey(key string) (Model, tea.Cmd) {
 // ── Screen: Pipelines ─────────────────────────────────────────────────────────
 
 func (m Model) handlePipelineKey(key string) (Model, tea.Cmd) {
+	// Route to overlay handlers when they are open
+	if m.copyChoiceOpen {
+		return m.handleCopyChoiceKey(key)
+	}
+
+	// Clear copy feedback on any navigation key
+	if m.copyFeedback != "" {
+		m.copyFeedback = ""
+	}
+
 	switch key {
 	case "up", "k":
 		if m.pipelineCursor > 0 {
@@ -391,8 +451,30 @@ func (m Model) handlePipelineKey(key string) (Model, tea.Cmd) {
 	case "enter":
 		return m.openPipelineDetail()
 	case "r", "R":
+		// Re-run same branch silently
+		if len(m.pipelines) == 0 {
+			return m, nil
+		}
+		pip := m.pipelines[m.pipelineCursor]
+		m.loading = true
+		return m, tea.Batch(m.spinner.Tick, m.reRunPipeline(pip.GitRef))
+	case "u", "U":
+		// Manual refresh
 		m.loading = true
 		return m, tea.Batch(m.spinner.Tick, m.loadPipelines())
+	case "x", "X":
+		// Cancel the selected pipeline
+		if len(m.pipelines) == 0 {
+			return m, nil
+		}
+		pip := m.pipelines[m.pipelineCursor]
+		m.loading = true
+		return m, tea.Batch(m.spinner.Tick, m.cancelPipeline(pip.ID))
+	case "c", "C":
+		// Open copy-choice overlay
+		if len(m.pipelines) > 0 {
+			m.copyChoiceOpen = true
+		}
 	case "n", "N":
 		// Open create pipeline modal
 		m.screen = ScreenCreatePipeline
@@ -401,6 +483,7 @@ func (m Model) handlePipelineKey(key string) (Model, tea.Cmd) {
 		m.createPipelineError = ""
 		m.createPipelineInputField = 0
 		m.createPipelineDisplayBranch = ""
+		m.createConfirming = false
 	case "esc", "backspace":
 		// Back to welcome / project selector
 		m.screen = ScreenWelcome
@@ -416,6 +499,8 @@ func (m Model) handlePipelineKey(key string) (Model, tea.Cmd) {
 		m.selectedJob = nil
 		m.jobTrace = ""
 		m.traceLoading = false
+		m.copyChoiceOpen = false
+		m.copyFeedback = ""
 		if m.traceViewport != nil {
 			m.traceViewport.SetContent("")
 			m.traceViewport.GotoTop()
@@ -426,6 +511,34 @@ func (m Model) handlePipelineKey(key string) (Model, tea.Cmd) {
 		m.projectCursor = 0
 	case "q":
 		return m, tea.Quit
+	}
+	return m, nil
+}
+
+func (m Model) handleCopyChoiceKey(key string) (Model, tea.Cmd) {
+	if len(m.pipelines) == 0 {
+		m.copyChoiceOpen = false
+		return m, nil
+	}
+	pip := m.pipelines[m.pipelineCursor]
+	switch key {
+	case "esc":
+		m.copyChoiceOpen = false
+	case "1", "b":
+		// Copy branch name
+		branch := pip.GitRef
+		return m, m.copyToClipboard(branch, "Branch name copied!")
+	case "2", "w":
+		// Copy pipeline web URL
+		url := ""
+		if pip.WebURL != nil && *pip.WebURL != "" {
+			url = *pip.WebURL
+		}
+		if url == "" {
+			m.copyChoiceOpen = false
+			return m, nil
+		}
+		return m, m.copyToClipboard(url, "Pipeline URL copied!")
 	}
 	return m, nil
 }
@@ -465,6 +578,9 @@ func (m Model) handleJobsKey(key string) (Model, tea.Cmd) {
 	case "enter":
 		return m.openJobLog()
 	case "r", "R":
+		// Open job run modal for the selected job
+		return m.openJobRunModal()
+	case "u", "U":
 		m.loading = true
 		return m, tea.Batch(m.spinner.Tick, m.loadDetail(m.detail.ID))
 	case "esc", "backspace":
@@ -505,6 +621,20 @@ func (m Model) openJobLog() (Model, tea.Cmd) {
 	return m, tea.Batch(m.spinner.Tick, m.loadJobTrace(job.ID))
 }
 
+func (m Model) openJobRunModal() (Model, tea.Cmd) {
+	if m.detail == nil || len(m.detail.Jobs) == 0 {
+		return m, nil
+	}
+	job := &m.detail.Jobs[m.jobCursor]
+	m.screen = ScreenJobRun
+	m.jobRunJobID = job.ID
+	m.jobRunVariables = ""
+	m.jobRunError = ""
+	// Determine if this is a retry (failed job) or manual trigger
+	m.jobRunIsRetry = job.Status == "failed"
+	return m, nil
+}
+
 // ── Screen: Job Log ───────────────────────────────────────────────────────────
 
 func (m Model) handleJobLogKey(key string) (Model, tea.Cmd) {
@@ -536,9 +666,69 @@ func (m Model) handleJobLogKey(key string) (Model, tea.Cmd) {
 	return m, nil
 }
 
+// ── Screen: Job Run ─────────────────────────────────────────────────────────────
+
+func (m Model) handleJobRunKey(key string) (Model, tea.Cmd) {
+	// Confirm step — block editing, only accept Enter or Esc
+	if m.jobRunConfirming {
+		switch key {
+		case "ctrl+c":
+			return m, tea.Quit
+		case "esc":
+			m.jobRunConfirming = false
+		case "enter":
+			m.loading = true
+			m.jobRunError = ""
+			return m, tea.Batch(m.spinner.Tick, m.runJob())
+		}
+		return m, nil
+	}
+
+	switch key {
+	case "ctrl+c", "q":
+		return m, tea.Quit
+	case "esc":
+		// Cancel and go back to jobs
+		m.screen = ScreenJobs
+		m.jobRunJobID = 0
+		m.jobRunVariables = ""
+		m.jobRunError = ""
+		m.jobRunConfirming = false
+	case "enter":
+		// Go to confirm step
+		m.jobRunConfirming = true
+		m.jobRunError = ""
+	case "backspace":
+		if len(m.jobRunVariables) > 0 {
+			m.jobRunVariables = m.jobRunVariables[:len(m.jobRunVariables)-1]
+		}
+	default:
+		// Allow characters for variables input
+		if len(key) == 1 {
+			m.jobRunVariables += key
+		}
+	}
+	return m, nil
+}
+
 // ── Screen: Create Pipeline ─────────────────────────────────────────────────────
 
 func (m Model) handleCreatePipelineKey(key string) (Model, tea.Cmd) {
+	// Block field editing while confirmation overlay is showing
+	if m.createConfirming {
+		switch key {
+		case "ctrl+c":
+			return m, tea.Quit
+		case "esc":
+			m.createConfirming = false
+		case "enter":
+			m.loading = true
+			m.createPipelineError = ""
+			return m, tea.Batch(m.spinner.Tick, m.createPipeline())
+		}
+		return m, nil
+	}
+
 	switch key {
 	case "ctrl+c", "q":
 		return m, tea.Quit
@@ -550,16 +740,16 @@ func (m Model) handleCreatePipelineKey(key string) (Model, tea.Cmd) {
 		m.createPipelineError = ""
 		m.createPipelineInputField = 0
 		m.createPipelineDisplayBranch = ""
+		m.createConfirming = false
 		m.loading = false
 	case "enter":
-		// Create pipeline
+		// Go to confirm step
 		if m.createPipelineBranch == "" {
 			m.createPipelineError = "Branch name is required"
 			return m, nil
 		}
-		m.loading = true
 		m.createPipelineError = ""
-		return m, tea.Batch(m.spinner.Tick, m.createPipeline())
+		m.createConfirming = true
 	case "tab":
 		// Switch between input fields
 		m.createPipelineInputField = 1 - m.createPipelineInputField
@@ -649,6 +839,11 @@ func normalizeBranchName(branch string) string {
 		}
 	}
 
+	// Add release/ for FY... fiscal-year branches
+	if strings.HasPrefix(strings.ToUpper(branch), "FY") {
+		return "release/" + branch
+	}
+
 	// Only add story/ for CUC-XXX pattern
 	if matched, _ := regexp.MatchString(`^CUC-\d+`, branch); matched {
 		return "story/" + branch
@@ -703,6 +898,49 @@ func (m Model) createPipeline() tea.Cmd {
 			return errMsg{err}
 		}
 		return pipelineCreatedMsg{pipelineID: pipelineID}
+	}
+}
+
+func (m Model) reRunPipeline(branch string) tea.Cmd {
+	fp := m.selectedProject.FullPath
+	return func() tea.Msg {
+		pipelineID, err := gl.CreatePipeline(fp, branch, "")
+		if err != nil {
+			return errMsg{err}
+		}
+		return pipelineCreatedMsg{pipelineID: pipelineID}
+	}
+}
+
+func (m Model) cancelPipeline(pipelineID uint64) tea.Cmd {
+	fp := m.selectedProject.FullPath
+	return func() tea.Msg {
+		err := gl.CancelPipeline(fp, pipelineID)
+		if err != nil {
+			return errMsg{err}
+		}
+		return pipelineCanceledMsg{}
+	}
+}
+
+func (m Model) copyToClipboard(text, feedback string) tea.Cmd {
+	return func() tea.Msg {
+		_ = clipboard.WriteAll(text)
+		return copyDoneMsg{feedback: feedback}
+	}
+}
+
+func (m Model) runJob() tea.Cmd {
+	fp := m.selectedProject.FullPath
+	jobID := m.jobRunJobID
+	isRetry := m.jobRunIsRetry
+	variables := m.jobRunVariables
+	return func() tea.Msg {
+		err := gl.RunJob(fp, jobID, isRetry, variables)
+		if err != nil {
+			return jobRunMsg{success: false, error: err.Error()}
+		}
+		return jobRunMsg{success: true}
 	}
 }
 
@@ -869,6 +1107,19 @@ func (m *Model) CreatePipelineVariables() string     { return m.createPipelineVa
 func (m *Model) CreatePipelineError() string         { return m.createPipelineError }
 func (m *Model) CreatePipelineInputField() int       { return m.createPipelineInputField }
 func (m *Model) CreatePipelineDisplayBranch() string { return m.createPipelineDisplayBranch }
+func (m *Model) CreateConfirming() bool              { return m.createConfirming }
+
+// Pipeline overlays
+func (m *Model) CopyChoiceOpen() bool      { return m.copyChoiceOpen }
+func (m *Model) CopyFeedback() string      { return m.copyFeedback }
+func (m *Model) HasRunningPipeline() bool  { return m.hasRunningPipeline() }
+
+// Job Run
+func (m *Model) JobRunJobID() uint64      { return m.jobRunJobID }
+func (m *Model) JobRunVariables() string  { return m.jobRunVariables }
+func (m *Model) JobRunError() string      { return m.jobRunError }
+func (m *Model) JobRunIsRetry() bool      { return m.jobRunIsRetry }
+func (m *Model) JobRunConfirming() bool   { return m.jobRunConfirming }
 
 // Clone Prompt
 func (m *Model) ProjectCloneRequested() bool  { return m.projectCloneRequested }
