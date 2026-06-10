@@ -1,6 +1,6 @@
 <table align="center"><tr><td align="center" width="9999">
 
-<img src="docs/images/cover.png" alt="glab-pipe main interface" width="900">
+<img src="docs/images/logo.png" alt="glab-pipe main interface" width="900">
 
 **A terminal-native gitlab pipeline manager built with Go**
 
@@ -42,7 +42,15 @@
 
 <table align="center"><tr><td align="center" width="9999">
 
-<img src="docs/images/job-log.png" alt="glab-pipe main interface" width="500">
+<img src="docs/images/jobs-logs.png" alt="glab-pipe main interface" width="500">
+
+</td></tr></table>
+
+### Run pipeline modal
+
+<table align="center"><tr><td align="center" width="9999">
+
+<img src="docs/images/run-pipeline.png" alt="glab-pipe main interface" width="500">
 
 </td></tr></table>
 
